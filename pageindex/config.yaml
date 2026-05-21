@@ -1,0 +1,24 @@
+# Pipeline:
+#   pageindex = PageIndex cloud API (recommended, uses PageIndex credits)
+#   vrag      = local deterministic index (no API)
+#   legacy    = local LLM tree via PageIndex Chat API
+pipeline: "pageindex"
+model: "pageindex"
+retrieve_model: "pageindex"
+pageindex_api_base: "https://api.pageindex.ai"
+toc_check_page_num: 20
+max_page_num_each_node: 10
+max_token_num_each_node: 20000
+if_add_node_id: "yes"
+if_add_node_summary: "yes"
+if_add_doc_description: "yes"
+if_add_node_text: "yes"
+compression_target_ratio: 0.70
+compression_min_ratio: 0.60
+overlap_reject_threshold: 0.85
+overlap_adjacent_threshold: 0.15
+fail_on_validation: "yes"
+run_retrieval_tests: "yes"
+max_chunk_chars: 6000
+max_title_chars: 85
+domain: "generic"

@@ -1,0 +1,16 @@
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.local
+.venv/
+venv/
+env/
+logs/
+!logs/.gitkeep
+uploads/
+results/
+data/
+.pytest_cache/
+.vscode/

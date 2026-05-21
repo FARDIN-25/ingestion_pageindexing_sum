@@ -1,0 +1,12 @@
+[
+  {"query": "what is GST REG 06", "needles": ["reg", "06", "6.2"]},
+  {"query": "how to download GST registration certificate", "needles": ["certificate", "registration", "6.2"]},
+  {"query": "GSTR-1 due date", "needles": ["gstr", "due", "6.4"]},
+  {"query": "what is GSTR2A", "needles": ["gstr", "2a", "6.5"]},
+  {"query": "GSTR2B", "needles": ["gstr", "2b", "6.6"]},
+  {"query": "GSTR3B", "needles": ["gstr", "3b", "6.7"]},
+  {"query": "PMT06", "needles": ["pmt", "6.9"]},
+  {"query": "DRC03", "needles": ["drc", "6.10", "drc03"]},
+  {"query": "CMP08", "needles": ["cmp", "6.8"]},
+  {"query": "input tax credit verification", "needles": ["tax", "credit", "itc"]}
+]

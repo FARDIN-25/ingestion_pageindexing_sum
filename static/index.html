@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PageIndex</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      color: #222;
+      padding: 24px;
+    }
+
+    h1 { font-size: 1.5rem; margin-bottom: 4px; }
+    .subtitle { color: #666; margin-bottom: 24px; font-size: 0.9rem; }
+
+    .dropzone {
+      border: 2px dashed #bbb;
+      border-radius: 10px;
+      background: #fff;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .dropzone.dragover {
+      border-color: #2563eb;
+      background: #eff6ff;
+    }
+
+    .dropzone p { color: #666; margin-top: 8px; font-size: 0.9rem; }
+    .file-name { margin-top: 12px; font-weight: 600; color: #2563eb; }
+
+    .actions { margin: 16px 0 24px; display: flex; gap: 12px; align-items: center; }
+
+    button {
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+
+    button:disabled { background: #93c5fd; cursor: not-allowed; }
+
+    .status { font-size: 0.9rem; color: #666; }
+
+    .results { display: none; gap: 16px; }
+    .results.visible { display: grid; grid-template-columns: 1fr 1fr; }
+
+    @media (max-width: 900px) {
+      .results.visible { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: #fff;
+      border-radius: 10px;
+      border: 1px solid #e5e5e5;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 12px 16px;
+      font-weight: 600;
+      border-bottom: 1px solid #e5e5e5;
+      background: #fafafa;
+    }
+
+    .panel-body {
+      padding: 16px;
+      max-height: 520px;
+      overflow: auto;
+    }
+
+    pre {
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .tree ul {
+      list-style: none;
+      padding-left: 20px;
+    }
+
+    .tree > ul { padding-left: 0; }
+
+    .tree li { margin: 6px 0; }
+
+    .node-title {
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .node-title:hover { color: #2563eb; }
+
+    .node-meta {
+      font-size: 0.8rem;
+      color: #888;
+      margin-left: 4px;
+    }
+
+    .node-summary {
+      font-size: 0.85rem;
+      color: #555;
+      margin: 4px 0 4px 16px;
+      line-height: 1.4;
+    }
+
+    .error {
+      background: #fef2f2;
+      color: #b91c1c;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-top: 16px;
+      display: none;
+    }
+
+    .error.visible { display: block; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #93c5fd;
+      border-top-color: #2563eb;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>PageIndex</h1>
+  <p class="subtitle">Upload a PDF to generate a tree structure index. <a href="/usage">Credit usage dashboard →</a></p>
+
+  <div class="dropzone" id="dropzone">
+    <strong>Drag & drop a PDF here</strong>
+    <p>or click to browse</p>
+    <div class="file-name" id="fileName"></div>
+    <input type="file" id="fileInput" accept=".pdf" hidden>
+  </div>
+
+  <div class="actions">
+    <button id="uploadBtn" disabled>Upload & Process</button>
+    <span class="status" id="status"></span>
+  </div>
+
+  <div class="error" id="error"></div>
+
+  <div class="results" id="results">
+    <div class="panel">
+      <div class="panel-header">Tree Structure</div>
+      <div class="panel-body tree" id="treeView"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">JSON Response</div>
+      <div class="panel-body"><pre id="jsonView"></pre></div>
+    </div>
+  </div>
+
+  <script>
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("fileInput");
+    const fileName = document.getElementById("fileName");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const status = document.getElementById("status");
+    const errorBox = document.getElementById("error");
+    const results = document.getElementById("results");
+    const treeView = document.getElementById("treeView");
+    const jsonView = document.getElementById("jsonView");
+
+    let selectedFile = null;
+
+    dropzone.addEventListener("click", () => fileInput.click());
+
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      setFile(e.dataTransfer.files[0]);
+    });
+
+    fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+
+    function setFile(file) {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith(".pdf")) {
+        showError("Please select a PDF file.");
+        return;
+      }
+      selectedFile = file;
+      fileName.textContent = file.name;
+      uploadBtn.disabled = false;
+      errorBox.classList.remove("visible");
+    }
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.classList.add("visible");
+    }
+
+    function renderTree(structure) {
+      if (!structure) return "<p>No structure found.</p>";
+      const roots = Array.isArray(structure) ? structure : [structure];
+      if (!roots.length) return "<p>No structure found.</p>";
+
+      function buildList(items) {
+        let html = "<ul>";
+        for (const node of items) {
+          const hasChildren = node.nodes && node.nodes.length;
+          const pStart = node.page_start ?? node.page_index ?? node.start_index;
+          const pEnd = node.page_end ?? node.page_index ?? node.end_index;
+          const pages = pStart != null && pStart > 0
+            ? `pp. ${pStart}${pEnd && pEnd !== pStart ? "–" + pEnd : ""}`
+            : "";
+          const meta = [node.type, node.node_id, pages].filter(Boolean).join(" · ");
+
+          html += "<li>";
+          html += `<span class="node-title">${escapeHtml(node.title || "Untitled")}</span>`;
+          if (meta) html += `<span class="node-meta">(${escapeHtml(meta)})</span>`;
+          const route = node.micro_summary || node.summary || (node.text ? node.text.slice(0, 120) + "..." : "");
+          if (route) html += `<div class="node-summary">${escapeHtml(route)}</div>`;
+          if (hasChildren) html += buildList(node.nodes);
+          html += "</li>";
+        }
+        html += "</ul>";
+        return html;
+      }
+
+      return buildList(roots);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    uploadBtn.addEventListener("click", async () => {
+      if (!selectedFile) return;
+
+      uploadBtn.disabled = true;
+      results.classList.remove("visible");
+      errorBox.classList.remove("visible");
+      status.innerHTML = '<span class="spinner"></span>Processing PDF... this may take a few minutes.';
+
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      try {
+        const res = await fetch("/api/process", { method: "POST", body: formData });
+        let data;
+        const text = await res.text();
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(text || `Server error (${res.status})`);
+        }
+
+        if (!res.ok) {
+          const detail = data.detail;
+          const msg = Array.isArray(detail)
+            ? detail.map((d) => d.msg || JSON.stringify(d)).join("; ")
+            : (detail || `Processing failed (${res.status})`);
+          throw new Error(msg);
+        }
+
+        jsonView.textContent = JSON.stringify(data, null, 2);
+        treeView.innerHTML = renderTree(data.structure);
+        results.classList.add("visible");
+        const docId = data.doc_id ? ` | doc_id: ${data.doc_id}` : "";
+        const usage = data.usage?.overview;
+        const cr = usage ? ` | ${Number(usage.total_credits_used || 0).toFixed(2)} credits (${data.usage?.accuracy_mix || "?"})` : "";
+        const dash = data.usage_dashboard_url ? ` · <a href="${data.usage_dashboard_url}">Usage dashboard</a>` : "";
+        status.innerHTML = `Done — ${escapeHtml(data.doc_name || selectedFile.name)}${docId}${cr}${dash}`;
+      } catch (err) {
+        showError(err.message);
+        status.textContent = "";
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

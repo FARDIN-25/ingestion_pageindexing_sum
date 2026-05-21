@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Credit Usage — PageIndex</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f1419; color: #e7e9ea; padding: 20px; }
+    a { color: #1d9bf0; }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    .sub { color: #71767b; font-size: 0.85rem; margin-bottom: 20px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 20px; }
+    select, input, button {
+      background: #16181c; border: 1px solid #2f3336; color: #e7e9ea;
+      padding: 8px 12px; border-radius: 8px; font-size: 0.9rem;
+    }
+    button { background: #1d9bf0; border: none; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1a8cd8; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .card {
+      background: #16181c; border: 1px solid #2f3336; border-radius: 12px; padding: 14px;
+    }
+    .card .label { font-size: 0.75rem; color: #71767b; text-transform: uppercase; }
+    .card .value { font-size: 1.35rem; font-weight: 700; margin-top: 4px; }
+    .badge {
+      display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: 4px;
+      font-weight: 600; margin-left: 6px;
+    }
+    .badge.exact { background: #00ba7c33; color: #00ba7c; }
+    .badge.estimated { background: #f7931a33; color: #ffad1f; }
+    .badge.local { background: #7856ff33; color: #a78bfa; }
+    .badge.alloc { background: #53647133; color: #8b98a5; }
+    .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+    @media (max-width: 900px) { .panels { grid-template-columns: 1fr; } }
+    .panel {
+      background: #16181c; border: 1px solid #2f3336; border-radius: 12px; padding: 16px;
+    }
+    .panel h2 { font-size: 0.95rem; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #2f3336; }
+    th { color: #71767b; cursor: pointer; user-select: none; }
+    tr:hover { background: #1c1f23; }
+    tr.clickable { cursor: pointer; }
+    .heatmap { display: flex; flex-wrap: wrap; gap: 4px; }
+    .heat-cell {
+      width: 28px; height: 28px; border-radius: 4px; font-size: 0.6rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .modal {
+      display: none; position: fixed; inset: 0; background: #000000aa;
+      align-items: center; justify-content: center; z-index: 100;
+    }
+    .modal.open { display: flex; }
+    .modal-box {
+      background: #16181c; border: 1px solid #2f3336; border-radius: 12px;
+      padding: 20px; max-width: 520px; width: 90%; max-height: 80vh; overflow: auto;
+    }
+    .modal-box pre { font-size: 0.8rem; white-space: pre-wrap; color: #8b98a5; }
+    .err { color: #f4212e; padding: 12px; background: #f4212e22; border-radius: 8px; display: none; }
+    .err.visible { display: block; }
+    .cache-row { font-size: 0.85rem; color: #8b98a5; margin-top: 8px; }
+    #tableWrap { max-height: 400px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>Credit Usage Observatory</h1>
+  <p class="sub"><a href="/">← Back to upload</a> · Per-page · per-operation · reverse trace · EXACT vs ESTIMATED labeled</p>
+
+  <div class="toolbar">
+    <label>Job <select id="jobSelect"></select></label>
+    <button id="refreshBtn">Refresh</button>
+    <label>Trace credits <input type="number" id="traceCredits" step="0.01" min="0" placeholder="1.00" style="width:80px"></label>
+    <button id="traceBtn">Reverse trace</button>
+  </div>
+
+  <div class="err" id="error"></div>
+
+  <div class="grid" id="overview"></div>
+  <div class="cache-row" id="cacheInfo"></div>
+
+  <div class="panels">
+    <div class="panel"><h2>Credit timeline</h2><canvas id="timelineChart" height="200"></canvas></div>
+    <div class="panel"><h2>Cost breakdown by operation</h2><canvas id="pieChart" height="200"></canvas></div>
+  </div>
+
+  <div class="panel" style="margin-bottom:16px">
+    <h2>Page heatmap (darker = more credits)</h2>
+    <div class="heatmap" id="heatmap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Page / operation breakdown</h2>
+    <div style="margin-bottom:8px">
+      <input type="search" id="filterInput" placeholder="Filter operation, page…" style="width:100%;max-width:320px">
+    </div>
+    <div id="tableWrap">
+      <table id="eventTable">
+        <thead>
+          <tr>
+            <th data-sort="page">Page</th>
+            <th data-sort="operation">Operation</th>
+            <th data-sort="model">Model</th>
+            <th data-sort="in">In Tok</th>
+            <th data-sort="out">Out Tok</th>
+            <th data-sort="credits">Credits</th>
+            <th data-sort="latency">Latency</th>
+            <th data-sort="status">Status</th>
+            <th>Cache</th>
+            <th data-sort="accuracy">Accuracy</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="modal" id="modal">
+    <div class="modal-box">
+      <h3 id="modalTitle">Event detail</h3>
+      <pre id="modalBody"></pre>
+      <button id="modalClose" style="margin-top:12px">Close</button>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    let currentJobId = params.get("job_id") || "";
+    let report = null;
+    let timelineChart, pieChart;
+    let sortKey = "timestamp", sortAsc = true;
+
+    const jobSelect = document.getElementById("jobSelect");
+    const errorEl = document.getElementById("error");
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.classList.add("visible");
+    }
+
+    function accuracyBadge(acc) {
+      const a = (acc || "ESTIMATED").toUpperCase();
+      if (a.includes("EXACT")) return '<span class="badge exact">EXACT</span>';
+      if (a.includes("LOCAL")) return '<span class="badge local">LOCAL</span>';
+      if (a.includes("ALLOCATION")) return '<span class="badge alloc">EST. SPLIT</span>';
+      return '<span class="badge estimated">ESTIMATED</span>';
+    }
+
+    async function loadJobs() {
+      const res = await fetch("/api/usage/jobs?limit=40");
+      const data = await res.json();
+      jobSelect.innerHTML = "";
+      for (const j of data.jobs || []) {
+        const opt = document.createElement("option");
+        opt.value = j.job_id;
+        opt.textContent = `${j.document_name} (${j.status}) — ${Number(j.total_credits || 0).toFixed(2)} cr`;
+        if (j.job_id === currentJobId) opt.selected = true;
+        jobSelect.appendChild(opt);
+      }
+      if (!currentJobId && data.jobs?.length) {
+        currentJobId = data.jobs[0].job_id;
+        jobSelect.value = currentJobId;
+      }
+    }
+
+    async function loadReport() {
+      if (!currentJobId) return;
+      errorEl.classList.remove("visible");
+      const res = await fetch(`/api/usage/job/${currentJobId}`);
+      if (!res.ok) throw new Error(await res.text());
+      report = await res.json();
+      render();
+    }
+
+    function renderOverview() {
+      const o = report.overview || {};
+      const mix = report.accuracy_mix || "ESTIMATED";
+      document.getElementById("overview").innerHTML = `
+        <div class="card"><div class="label">Document</div><div class="value" style="font-size:1rem">${escape(o.document_name)}</div></div>
+        <div class="card"><div class="label">Pages</div><div class="value">${o.total_pages || 0}</div></div>
+        <div class="card"><div class="label">Total credits</div><div class="value">${Number(o.total_credits_used||0).toFixed(4)} ${accuracyBadge(mix)}</div></div>
+        <div class="card"><div class="label">Avg / page</div><div class="value">${Number(o.average_credits_per_page||0).toFixed(4)}</div></div>
+        <div class="card"><div class="label">Tokens</div><div class="value">${(o.total_tokens||0).toLocaleString()}</div></div>
+        <div class="card"><div class="label">Duration</div><div class="value">${escape(o.total_processing_time||"—")}</div></div>
+        <div class="card"><div class="label">Status</div><div class="value">${escape(o.status||"—")}</div></div>
+        <div class="card"><div class="label">Retries / failed pages</div><div class="value">${o.retries||0} / ${o.failed_pages||0}</div></div>
+      `;
+      const c = report.cache_accounting || {};
+      document.getElementById("cacheInfo").textContent =
+        `Cache: without ${Number(c.without_cache_credits||0).toFixed(2)} → with ${Number(c.with_cache_credits||0).toFixed(2)} · saved ${Number(c.credits_saved||0).toFixed(2)} (${c.cache_hits||0} hits / ${c.cache_misses||0} misses)`;
+    }
+
+    function renderCharts() {
+      const tl = report.timeline || [];
+      const labels = tl.map((p, i) => `${p.operation} (p${p.page_number||0})`);
+      const cum = tl.map(p => p.credits_cumulative);
+      if (timelineChart) timelineChart.destroy();
+      timelineChart = new Chart(document.getElementById("timelineChart"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{ label: "Cumulative credits", data: cum, borderColor: "#1d9bf0", tension: 0.2, fill: false }],
+        },
+        options: { plugins: { legend: { labels: { color: "#e7e9ea" } } }, scales: { x: { ticks: { color: "#71767b", maxRotation: 45 } }, y: { ticks: { color: "#71767b" } } } },
+      });
+
+      const bd = report.cost_breakdown || [];
+      if (pieChart) pieChart.destroy();
+      pieChart = new Chart(document.getElementById("pieChart"), {
+        type: "doughnut",
+        data: {
+          labels: bd.map(b => b.operation),
+          datasets: [{ data: bd.map(b => b.credits), backgroundColor: ["#1d9bf0","#00ba7c","#ffad1f","#f4212e","#7856ff","#8b98a5","#17bf63"] }],
+        },
+        options: { plugins: { legend: { labels: { color: "#e7e9ea" } } } },
+      });
+    }
+
+    function renderHeatmap() {
+      const hm = report.page_heatmap || [];
+      const max = Math.max(...hm.map(h => h.credits), 0.001);
+      const el = document.getElementById("heatmap");
+      el.innerHTML = hm.map(h => {
+        const intensity = Math.min(1, h.credits / max);
+        const r = Math.round(29 + (29 - 29) * intensity);
+        const g = Math.round(155 * intensity);
+        const b = Math.round(240 * intensity);
+        return `<div class="heat-cell" title="Page ${h.page}: ${h.credits.toFixed(4)} credits" style="background:rgb(${r},${g},${b})">${h.page}</div>`;
+      }).join("") || "<span style='color:#71767b'>No per-page data</span>";
+    }
+
+    function renderTable() {
+      const filter = (document.getElementById("filterInput").value || "").toLowerCase();
+      let rows = [...(report.event_table || [])];
+      if (filter) {
+        rows = rows.filter(r =>
+          `${r.page} ${r.operation} ${r.model} ${r.accuracy}`.toLowerCase().includes(filter)
+        );
+      }
+      rows.sort((a, b) => {
+        const av = a[sortKey === "page" ? "page" : sortKey === "in" ? "input_tokens" : sortKey === "out" ? "output_tokens" : sortKey === "credits" ? "credits" : sortKey === "latency" ? "latency_ms" : sortKey] ?? "";
+        const bv = b[sortKey === "page" ? "page" : sortKey === "in" ? "input_tokens" : sortKey === "out" ? "output_tokens" : sortKey === "credits" ? "credits" : sortKey === "latency" ? "latency_ms" : sortKey] ?? "";
+        if (av < bv) return sortAsc ? -1 : 1;
+        if (av > bv) return sortAsc ? 1 : -1;
+        return 0;
+      });
+      const tbody = document.querySelector("#eventTable tbody");
+      tbody.innerHTML = rows.map(r => `
+        <tr class="clickable" data-id="${r.event_id}">
+          <td>${r.page}</td>
+          <td>${escape(r.operation)}</td>
+          <td>${escape(r.model || "—")}</td>
+          <td>${r.input_tokens}</td>
+          <td>${r.output_tokens}</td>
+          <td>${Number(r.credits).toFixed(6)}</td>
+          <td>${r.latency_ms}ms</td>
+          <td>${escape(r.status)}</td>
+          <td>${r.cache_hit ? "✓" : "—"}</td>
+          <td>${accuracyBadge(r.accuracy)}</td>
+        </tr>
+      `).join("");
+      tbody.querySelectorAll("tr").forEach(tr => {
+        tr.addEventListener("click", () => openEvent(tr.dataset.id));
+      });
+    }
+
+    function openEvent(eventId) {
+      const ev = (report.event_table || []).find(e => e.event_id === eventId);
+      if (!ev) return;
+      document.getElementById("modalTitle").textContent = `${ev.operation} — page ${ev.page}`;
+      document.getElementById("modalBody").textContent = JSON.stringify({
+        why: `Credits for ${ev.operation} on page ${ev.page}`,
+        model: ev.model,
+        tokens: { input: ev.input_tokens, output: ev.output_tokens },
+        credits: ev.credits,
+        accuracy: ev.accuracy,
+        latency_ms: ev.latency_ms,
+        cache_hit: ev.cache_hit,
+        score_breakdown: ev.score_breakdown,
+        timestamp: ev.timestamp,
+      }, null, 2);
+      document.getElementById("modal").classList.add("open");
+    }
+
+    function escape(s) {
+      const d = document.createElement("div");
+      d.textContent = s ?? "";
+      return d.innerHTML;
+    }
+
+    function render() {
+      renderOverview();
+      renderCharts();
+      renderHeatmap();
+      renderTable();
+    }
+
+    document.getElementById("refreshBtn").addEventListener("click", async () => {
+      currentJobId = jobSelect.value;
+      history.replaceState({}, "", `?job_id=${currentJobId}`);
+      try { await loadReport(); } catch (e) { showError(e.message); }
+    });
+
+    jobSelect.addEventListener("change", () => document.getElementById("refreshBtn").click());
+
+    document.getElementById("filterInput").addEventListener("input", renderTable);
+
+    document.querySelectorAll("#eventTable th[data-sort]").forEach(th => {
+      th.addEventListener("click", () => {
+        const k = th.dataset.sort;
+        if (sortKey === k) sortAsc = !sortAsc;
+        else { sortKey = k; sortAsc = true; }
+        renderTable();
+      });
+    });
+
+    document.getElementById("traceBtn").addEventListener("click", async () => {
+      const c = document.getElementById("traceCredits").value;
+      const q = c ? `?credits=${c}` : "";
+      const res = await fetch(`/api/usage/trace/${currentJobId}${q}`);
+      const data = await res.json();
+      document.getElementById("modalTitle").textContent = `Reverse trace (${data.total_attributed} credits)`;
+      document.getElementById("modalBody").textContent = JSON.stringify(data.attribution, null, 2);
+      document.getElementById("modal").classList.add("open");
+    });
+
+    document.getElementById("modalClose").addEventListener("click", () => document.getElementById("modal").classList.remove("open"));
+
+    (async () => {
+      try {
+        await loadJobs();
+        await loadReport();
+      } catch (e) {
+        showError(e.message);
+      }
+    })();
+  </script>
+</body>
+</html>

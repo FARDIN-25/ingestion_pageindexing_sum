@@ -3,248 +3,393 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PageIndex</title>
+  <title>PageIndex | Ingestion Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg: #0f1115;
+      --surface: rgba(255, 255, 255, 0.05);
+      --surface-hover: rgba(255, 255, 255, 0.08);
+      --border: rgba(255, 255, 255, 0.1);
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.5);
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #f5f5f5;
-      color: #222;
-      padding: 24px;
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
     }
 
-    h1 { font-size: 1.5rem; margin-bottom: 4px; }
-    .subtitle { color: #666; margin-bottom: 24px; font-size: 0.9rem; }
-
-    .dropzone {
-      border: 2px dashed #bbb;
-      border-radius: 10px;
-      background: #fff;
-      padding: 48px 24px;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
+    /* Ambient background blur */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -20%; left: -10%;
+      width: 50%; height: 50%;
+      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+      filter: blur(120px);
+      z-index: -1;
+      opacity: 0.4;
     }
 
-    .dropzone.dragover {
-      border-color: #2563eb;
-      background: #eff6ff;
+    header {
+      padding: 24px 48px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 17, 21, 0.7);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
     }
 
-    .dropzone p { color: #666; margin-top: 8px; font-size: 0.9rem; }
-    .file-name { margin-top: 12px; font-weight: 600; color: #2563eb; }
+    h1 { font-weight: 700; font-size: 1.5rem; letter-spacing: -0.02em; }
+    h1 span { color: var(--accent); }
 
-    .actions { margin: 16px 0 24px; display: flex; gap: 12px; align-items: center; }
-
-    button {
-      background: #2563eb;
-      color: #fff;
-      border: none;
-      padding: 10px 20px;
-      border-radius: 6px;
-      font-size: 0.95rem;
-      cursor: pointer;
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.2s;
     }
+    .nav-links a:hover { color: var(--text); }
 
-    button:disabled { background: #93c5fd; cursor: not-allowed; }
-
-    .status { font-size: 0.9rem; color: #666; }
-
-    .results { display: none; gap: 16px; }
-    .results.visible { display: grid; grid-template-columns: 1fr 1fr; }
-
-    @media (max-width: 900px) {
-      .results.visible { grid-template-columns: 1fr; }
+    main {
+      padding: 48px;
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 3fr;
+      gap: 32px;
     }
 
     .panel {
-      background: #fff;
-      border-radius: 10px;
-      border: 1px solid #e5e5e5;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+    }
+
+    h2 { font-size: 1.25rem; font-weight: 600; margin-bottom: 16px; color: #fff; }
+
+    /* Controls */
+    .btn {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 14px 24px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+
+    .btn:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 16px var(--accent-glow);
+    }
+
+    .btn:disabled {
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: not-allowed;
+      border: 1px solid var(--border);
+    }
+
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+    .btn.loading .spinner { display: block; }
+
+    /* Drag & Drop */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 32px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: rgba(0,0,0,0.2);
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.05);
+    }
+    .dropzone p { color: var(--text-muted); font-size: 0.9rem; margin-top: 8px; }
+
+    /* Queue Grid */
+    .queue-header {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;
+    }
+    .queue-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    .job-card {
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      transition: all 0.2s;
+      cursor: pointer;
+      position: relative;
       overflow: hidden;
     }
 
-    .panel-header {
-      padding: 12px 16px;
+    .job-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      background: var(--surface-hover);
+    }
+
+    .job-id { font-family: monospace; font-size: 0.85rem; color: var(--text-muted); }
+    .job-date { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
+    
+    .badge {
+      position: absolute;
+      top: 16px; right: 16px;
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 0.75rem;
       font-weight: 600;
-      border-bottom: 1px solid #e5e5e5;
-      background: #fafafa;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge.pending { background: rgba(255,255,255,0.1); color: var(--text); }
+    .badge.processing { background: rgba(59,130,246,0.2); color: #60a5fa; }
+    .badge.completed { background: rgba(16,185,129,0.2); color: #34d399; }
+    .badge.failed { background: rgba(239,68,68,0.2); color: #f87171; }
+
+    .error-msg {
+      margin-top: 12px; font-size: 0.8rem; color: #f87171;
+      background: rgba(239,68,68,0.1); padding: 8px; border-radius: 6px;
     }
 
-    .panel-body {
-      padding: 16px;
-      max-height: 520px;
-      overflow: auto;
+    /* Modal / Tree Viewer */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(8px);
+      display: flex; justify-content: flex-end; z-index: 100;
+      opacity: 0; pointer-events: none; transition: opacity 0.3s;
     }
-
-    pre {
-      font-size: 0.8rem;
-      white-space: pre-wrap;
-      word-break: break-word;
+    .modal-overlay.active { opacity: 1; pointer-events: all; }
+    
+    .modal-panel {
+      width: 600px; max-width: 90vw;
+      background: var(--bg); border-left: 1px solid var(--border);
+      height: 100%; overflow-y: auto;
+      transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      padding: 32px;
     }
+    .modal-overlay.active .modal-panel { transform: translateX(0); }
 
-    .tree ul {
-      list-style: none;
-      padding-left: 20px;
-    }
-
-    .tree > ul { padding-left: 0; }
-
-    .tree li { margin: 6px 0; }
-
-    .node-title {
-      font-weight: 600;
+    .modal-close {
+      position: absolute; top: 24px; right: 24px;
+      background: none; border: none; color: var(--text-muted); font-size: 1.5rem;
       cursor: pointer;
-      user-select: none;
     }
+    .modal-close:hover { color: #fff; }
 
-    .node-title:hover { color: #2563eb; }
-
-    .node-meta {
-      font-size: 0.8rem;
-      color: #888;
-      margin-left: 4px;
+    .tree ul { list-style: none; padding-left: 20px; border-left: 1px solid var(--border); margin-left: 8px;}
+    .tree > ul { padding-left: 0; border-left: none; margin-left: 0; }
+    .tree li { margin: 12px 0; position: relative; }
+    .tree li::before {
+      content: ''; position: absolute; left: -20px; top: 10px; width: 16px; height: 1px; background: var(--border);
     }
+    .tree > ul > li::before { display: none; }
 
-    .node-summary {
-      font-size: 0.85rem;
-      color: #555;
-      margin: 4px 0 4px 16px;
-      line-height: 1.4;
-    }
-
-    .error {
-      background: #fef2f2;
-      color: #b91c1c;
-      padding: 12px 16px;
-      border-radius: 8px;
-      margin-top: 16px;
-      display: none;
-    }
-
-    .error.visible { display: block; }
-
-    .spinner {
-      display: inline-block;
-      width: 14px;
-      height: 14px;
-      border: 2px solid #93c5fd;
-      border-top-color: #2563eb;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      vertical-align: middle;
-      margin-right: 6px;
-    }
+    .node-title { font-weight: 600; color: #fff; }
+    .node-meta { font-size: 0.8rem; color: var(--accent); margin-left: 8px; }
+    .node-ready { font-size: 0.7rem; background: rgba(16,185,129,0.2); color: #34d399; padding: 2px 6px; border-radius: 4px; margin-left: 8px;}
+    .node-summary { font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
 
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 1024px) {
+      main { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <h1>PageIndex</h1>
-  <p class="subtitle">Upload a PDF to generate a tree structure index. <a href="/usage">Credit usage dashboard →</a></p>
 
-  <div class="dropzone" id="dropzone">
-    <strong>Drag & drop a PDF here</strong>
-    <p>or click to browse</p>
-    <div class="file-name" id="fileName"></div>
-    <input type="file" id="fileInput" accept=".pdf" hidden>
-  </div>
-
-  <div class="actions">
-    <button id="uploadBtn" disabled>Upload & Process</button>
-    <span class="status" id="status"></span>
-  </div>
-
-  <div class="error" id="error"></div>
-
-  <div class="results" id="results">
-    <div class="panel">
-      <div class="panel-header">Tree Structure</div>
-      <div class="panel-body tree" id="treeView"></div>
+  <header>
+    <h1>Page<span>Index</span></h1>
+    <div class="nav-links">
+      <a href="/usage">Credit Dashboard →</a>
     </div>
-    <div class="panel">
-      <div class="panel-header">JSON Response</div>
-      <div class="panel-body"><pre id="jsonView"></pre></div>
+  </header>
+
+  <main>
+    <!-- Left Sidebar: Controls -->
+    <aside>
+      <div class="panel">
+        <h2>S3 Batch Ingestion</h2>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 24px; line-height: 1.5;">
+          Scans the configured S3 bucket for pending documents and processes them concurrently.
+        </p>
+        <button id="btnBatch" class="btn">
+          <div class="spinner"></div>
+          <span id="btnBatchText">Run Batch Pipeline</span>
+        </button>
+
+        <hr style="border:0; border-top: 1px solid var(--border); margin: 32px 0;">
+
+        <h2>Single Upload</h2>
+        <div class="dropzone" id="dropzone">
+          <strong style="color: #fff;">Drag & drop PDF</strong>
+          <p>or click to browse</p>
+          <input type="file" id="fileInput" accept=".pdf" hidden>
+        </div>
+        <p id="uploadStatus" style="font-size: 0.85rem; margin-top: 12px; color: var(--accent); text-align: center;"></p>
+      </div>
+    </aside>
+
+    <!-- Right Content: Live Queue -->
+    <section>
+      <div class="panel" style="min-height: 80vh;">
+        <div class="queue-header">
+          <h2>Live Ingestion Queue</h2>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">Auto-updating...</span>
+        </div>
+        <div class="queue-grid" id="queueGrid">
+          <!-- Cards injected here -->
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal for Tree View -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal-panel">
+      <button class="modal-close" id="modalClose">&times;</button>
+      <h2 id="modalTitle" style="margin-bottom: 8px;">Document Structure</h2>
+      <p id="modalDocId" style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 32px;"></p>
+      <div id="treeView" class="tree"></div>
     </div>
   </div>
 
   <script>
-    const dropzone = document.getElementById("dropzone");
-    const fileInput = document.getElementById("fileInput");
-    const fileName = document.getElementById("fileName");
-    const uploadBtn = document.getElementById("uploadBtn");
-    const status = document.getElementById("status");
-    const errorBox = document.getElementById("error");
-    const results = document.getElementById("results");
-    const treeView = document.getElementById("treeView");
-    const jsonView = document.getElementById("jsonView");
+    // Elements
+    const btnBatch = document.getElementById('btnBatch');
+    const btnBatchText = document.getElementById('btnBatchText');
+    const queueGrid = document.getElementById('queueGrid');
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const uploadStatus = document.getElementById('uploadStatus');
+    const modalOverlay = document.getElementById('modalOverlay');
+    const modalClose = document.getElementById('modalClose');
+    const treeView = document.getElementById('treeView');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalDocId = document.getElementById('modalDocId');
 
-    let selectedFile = null;
-
-    dropzone.addEventListener("click", () => fileInput.click());
-
-    dropzone.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      dropzone.classList.add("dragover");
+    // Trigger Batch
+    btnBatch.addEventListener('click', async () => {
+      btnBatch.classList.add('loading');
+      btnBatchText.textContent = 'Starting...';
+      try {
+        const res = await fetch('/api/ingestion/ingest/run', { method: 'POST' });
+        const data = await res.json();
+        if (res.status === 409) alert(data.detail);
+      } catch (err) {
+        alert("Error starting batch: " + err.message);
+      }
+      setTimeout(() => {
+        btnBatch.classList.remove('loading');
+        btnBatchText.textContent = 'Run Batch Pipeline';
+      }, 1500);
+      fetchJobs();
     });
 
-    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    // Poll Jobs
+    async function fetchJobs() {
+      try {
+        const res = await fetch('/api/ingestion/jobs');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderQueue(data.jobs || []);
+      } catch (e) {
+        console.error(e);
+      }
+    }
 
-    dropzone.addEventListener("drop", (e) => {
-      e.preventDefault();
-      dropzone.classList.remove("dragover");
-      setFile(e.dataTransfer.files[0]);
-    });
-
-    fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
-
-    function setFile(file) {
-      if (!file) return;
-      if (!file.name.toLowerCase().endsWith(".pdf")) {
-        showError("Please select a PDF file.");
+    function renderQueue(jobs) {
+      if (!jobs.length) {
+        queueGrid.innerHTML = '<p style="color:var(--text-muted)">No jobs found in the database.</p>';
         return;
       }
-      selectedFile = file;
-      fileName.textContent = file.name;
-      uploadBtn.disabled = false;
-      errorBox.classList.remove("visible");
+      queueGrid.innerHTML = jobs.map(job => `
+        <div class="job-card" onclick="openTree('${job.doc_id}', '${job.status}')">
+          <div class="badge ${job.status}">${job.status}</div>
+          <div style="font-weight: 600; color: #fff; margin-bottom: 4px;">Document</div>
+          <div class="job-id">${job.doc_id}</div>
+          <div class="job-date">${new Date(job.created_at).toLocaleString()}</div>
+          ${job.error_message ? `<div class="error-msg">${escapeHtml(job.error_message.slice(0,100))}...</div>` : ''}
+        </div>
+      `).join('');
     }
 
-    function showError(msg) {
-      errorBox.textContent = msg;
-      errorBox.classList.add("visible");
-    }
+    // Modal / Tree
+    modalClose.addEventListener('click', () => modalOverlay.classList.remove('active'));
+    modalOverlay.addEventListener('click', (e) => { if(e.target === modalOverlay) modalOverlay.classList.remove('active'); });
 
-    function renderTree(structure) {
-      if (!structure) return "<p>No structure found.</p>";
-      const roots = Array.isArray(structure) ? structure : [structure];
-      if (!roots.length) return "<p>No structure found.</p>";
-
-      function buildList(items) {
-        let html = "<ul>";
-        for (const node of items) {
-          const hasChildren = node.nodes && node.nodes.length;
-          const pStart = node.page_start ?? node.page_index ?? node.start_index;
-          const pEnd = node.page_end ?? node.page_index ?? node.end_index;
-          const pages = pStart != null && pStart > 0
-            ? `pp. ${pStart}${pEnd && pEnd !== pStart ? "–" + pEnd : ""}`
-            : "";
-          const meta = [node.type, node.node_id, pages].filter(Boolean).join(" · ");
-
-          html += "<li>";
-          html += `<span class="node-title">${escapeHtml(node.title || "Untitled")}</span>`;
-          if (meta) html += `<span class="node-meta">(${escapeHtml(meta)})</span>`;
-          const route = node.micro_summary || node.summary || (node.text ? node.text.slice(0, 120) + "..." : "");
-          if (route) html += `<div class="node-summary">${escapeHtml(route)}</div>`;
-          if (hasChildren) html += buildList(node.nodes);
-          html += "</li>";
-        }
-        html += "</ul>";
-        return html;
+    async function openTree(docId, status) {
+      if (status !== 'completed') return;
+      modalOverlay.classList.add('active');
+      modalDocId.textContent = docId;
+      treeView.innerHTML = '<div class="spinner" style="display:block; border-top-color:var(--accent); margin: 20px auto;"></div>';
+      
+      try {
+        const res = await fetch(`/api/ingestion/jobs/${docId}/tree`);
+        if (!res.ok) throw new Error('Failed to load tree');
+        const data = await res.json();
+        treeView.innerHTML = renderTreeHTML(data.structure);
+      } catch (e) {
+        treeView.innerHTML = `<p style="color:#f87171">${e.message}</p>`;
       }
+    }
 
-      return buildList(roots);
+    function renderTreeHTML(nodes) {
+      if (!nodes || !nodes.length) return "<p>No structure.</p>";
+      let html = "<ul>";
+      for (const node of nodes) {
+        html += "<li>";
+        html += `<div><span class="node-title">${escapeHtml(node.title || "Untitled")}</span>`;
+        if (node.type) html += `<span class="node-meta">${escapeHtml(node.type)}</span>`;
+        if (node.retrieval_ready) html += `<span class="node-ready">Ready</span>`;
+        html += `</div>`;
+        if (node.micro_summary) html += `<div class="node-summary">${escapeHtml(node.micro_summary)}</div>`;
+        if (node.nodes && node.nodes.length) html += renderTreeHTML(node.nodes);
+        html += "</li>";
+      }
+      html += "</ul>";
+      return html;
     }
 
     function escapeHtml(text) {
@@ -253,50 +398,36 @@
       return div.innerHTML;
     }
 
-    uploadBtn.addEventListener("click", async () => {
-      if (!selectedFile) return;
+    // Direct Upload Handler
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault(); dropzone.classList.remove("dragover");
+      handleUpload(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener("change", () => handleUpload(fileInput.files[0]));
 
-      uploadBtn.disabled = true;
-      results.classList.remove("visible");
-      errorBox.classList.remove("visible");
-      status.innerHTML = '<span class="spinner"></span>Processing PDF... this may take a few minutes.';
-
+    async function handleUpload(file) {
+      if (!file) return;
+      uploadStatus.textContent = "Uploading and processing...";
       const formData = new FormData();
-      formData.append("file", selectedFile);
-
+      formData.append("file", file);
       try {
         const res = await fetch("/api/process", { method: "POST", body: formData });
-        let data;
-        const text = await res.text();
-        try {
-          data = JSON.parse(text);
-        } catch {
-          throw new Error(text || `Server error (${res.status})`);
-        }
-
-        if (!res.ok) {
-          const detail = data.detail;
-          const msg = Array.isArray(detail)
-            ? detail.map((d) => d.msg || JSON.stringify(d)).join("; ")
-            : (detail || `Processing failed (${res.status})`);
-          throw new Error(msg);
-        }
-
-        jsonView.textContent = JSON.stringify(data, null, 2);
-        treeView.innerHTML = renderTree(data.structure);
-        results.classList.add("visible");
-        const docId = data.doc_id ? ` | doc_id: ${data.doc_id}` : "";
-        const usage = data.usage?.overview;
-        const cr = usage ? ` | ${Number(usage.total_credits_used || 0).toFixed(2)} credits (${data.usage?.accuracy_mix || "?"})` : "";
-        const dash = data.usage_dashboard_url ? ` · <a href="${data.usage_dashboard_url}">Usage dashboard</a>` : "";
-        status.innerHTML = `Done — ${escapeHtml(data.doc_name || selectedFile.name)}${docId}${cr}${dash}`;
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+        uploadStatus.innerHTML = `<span style="color:var(--success)">Upload successful! Job queued.</span>`;
+        fetchJobs();
       } catch (err) {
-        showError(err.message);
-        status.textContent = "";
-      } finally {
-        uploadBtn.disabled = false;
+        uploadStatus.innerHTML = `<span style="color:var(--danger)">${err.message}</span>`;
       }
-    });
+      setTimeout(() => uploadStatus.textContent = "", 4000);
+    }
+
+    // Initial load and poll
+    fetchJobs();
+    setInterval(fetchJobs, 3000);
+
   </script>
 </body>
 </html>

@@ -15,7 +15,7 @@ from typing import Any
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -61,6 +61,15 @@ async def lifespan(app: FastAPI):
         log_error("Config load failed: %s", e)
     if not key:
         log_error("PAGEINDEX_API_KEY is MISSING — set it in .env and restart!")
+
+    try:
+        from pageindex.db.database import Base, engine
+        import pageindex.db.models  # Required for Base.metadata to discover the tables
+        Base.metadata.create_all(bind=engine)
+        log_info("Database tables verified.")
+    except Exception as e:
+        log_error("Failed to initialize database: %s", e)
+
     log_info("=" * 60)
     yield
     log_info("Server stopped")
@@ -352,3 +361,62 @@ async def process_upload(file: UploadFile = File(...)):
     except Exception as exc:
         log_exception("UPLOAD FAILED: %s", exc)
         raise HTTPException(status_code=500, detail=friendly_error(exc)) from exc
+
+
+@app.post("/api/ingestion/ingest/run")
+async def run_ingestion(background_tasks: BackgroundTasks):
+    from pageindex.ingestion_service import ingestion_service
+    if ingestion_service._is_running:
+        raise HTTPException(status_code=409, detail="Ingestion is already running.")
+    
+    background_tasks.add_task(ingestion_service.run)
+    return {"message": "Ingestion started in the background."}
+
+
+@app.get("/api/ingestion/jobs")
+async def list_jobs():
+    from pageindex.db.database import SessionLocal
+    from pageindex.db.models import DocumentJob
+    db = SessionLocal()
+    try:
+        jobs = db.query(DocumentJob).order_by(DocumentJob.created_at.desc()).limit(100).all()
+        return {"jobs": [{"doc_id": j.doc_id, "status": j.status, "error_message": j.error_message, "created_at": j.created_at.isoformat()} for j in jobs]}
+    finally:
+        db.close()
+
+
+@app.get("/api/ingestion/jobs/{doc_id}/tree")
+async def get_job_tree(doc_id: str):
+    from pageindex.db.database import SessionLocal
+    from pageindex.db.models import DocumentNode
+    db = SessionLocal()
+    try:
+        nodes = db.query(DocumentNode).filter(DocumentNode.doc_id == doc_id).all()
+        if not nodes:
+            raise HTTPException(status_code=404, detail="Tree not found for this document.")
+        
+        # Reconstruct tree from flat nodes
+        node_map = {}
+        for n in nodes:
+            node_map[n.node_id] = {
+                "node_id": n.node_id,
+                "parent_id": n.parent_id,
+                "type": n.type,
+                "title": n.title,
+                "level": n.level,
+                "retrieval_ready": n.retrieval_ready,
+                "micro_summary": n.micro_summary,
+                "nodes": []
+            }
+            
+        root_nodes = []
+        for n in nodes:
+            if n.parent_id and n.parent_id in node_map:
+                node_map[n.parent_id]["nodes"].append(node_map[n.node_id])
+            else:
+                root_nodes.append(node_map[n.node_id])
+                
+        return {"structure": root_nodes}
+    finally:
+        db.close()
+

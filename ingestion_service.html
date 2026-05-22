@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ingestion Microservice — Interactive Architecture Dashboard</title>
+  <style>
+    :root {
+      --bg:#0d1117; --bg2:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e;
+      --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --danger:#f85149; --purple:#a371f7;
+      --card:#21262d; --sidebar-w:280px; --font: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin:0; font-family: var(--font); background: var(--bg); color: var(--text); line-height:1.5; }
+    a { color: var(--accent); }
+    h1,h2,h3 { font-weight:600; letter-spacing: -0.02em; }
+    h1 { font-size:1.35rem; }
+    h2 { font-size:1.1rem; color: #f0f3f6; border-bottom:1px solid var(--border); padding-bottom:.4rem; margin-top:0; }
+    h3 { font-size:0.95rem; color: var(--muted); margin:1rem 0 .5rem; }
+    code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:0.82rem; }
+    .layout { display: flex; min-height: 100vh; }
+    #sidebar {
+      position: fixed; left:0; top:0; width: var(--sidebar-w); height: 100vh; background: var(--bg2);
+      border-right:1px solid var(--border); padding: 1rem 0.75rem; overflow-y: auto; z-index: 50;
+    }
+    #sidebar h1 { padding: 0 0.5rem 0.75rem; margin:0; font-size:0.95rem; color: var(--muted); text-transform:uppercase; letter-spacing:.08em;}
+    #sidebar nav a {
+      display:block; padding: .45rem .65rem; border-radius:6px; color: var(--text); text-decoration:none; font-size:0.88rem;
+    }
+    #sidebar nav a:hover, #sidebar nav a.active { background: var(--card); color: var(--accent); }
+    #search {
+      width:100%; margin-bottom:0.75rem; padding:0.5rem 0.6rem; border-radius:6px; border:1px solid var(--border);
+      background: var(--bg); color: var(--text); font-size:0.85rem;
+    }
+    #main { margin-left: var(--sidebar-w); flex:1; padding: 1.25rem 1.5rem 3rem; max-width: 1200px; }
+    .sticky-nav {
+      position: sticky; top:0; z-index:40; background: rgba(13,17,23,0.92); backdrop-filter: blur(8px);
+      border-bottom:1px solid var(--border); margin: -1.25rem -1.5rem 1rem; padding: 0.6rem 1.5rem;
+      display:flex; flex-wrap:wrap; gap:0.4rem; align-items:center;
+    }
+    .sticky-nav button {
+      background: var(--card); border:1px solid var(--border); color: var(--text); padding:0.35rem 0.65rem;
+      border-radius:6px; cursor:pointer; font-size:0.8rem;
+    }
+    .sticky-nav button:hover { border-color: var(--accent); color: var(--accent); }
+    .tag { display:inline-block; font-size:0.65rem; padding:0.15rem 0.45rem; border-radius:4px; background: var(--card); color: var(--muted); margin-right:0.35rem; }
+    .tag.ok { background: rgba(63,185,80,0.15); color: var(--ok); }
+    .tag.warn { background: rgba(210,153,34,0.15); color: var(--warn); }
+    .tag.danger { background: rgba(248,81,73,0.12); color: var(--danger); }
+    .card {
+      background: var(--bg2); border:1px solid var(--border); border-radius:10px; padding:1rem 1.1rem; margin-bottom:1rem;
+      transition: border-color .15s, opacity .2s;
+    }
+    .card.hidden-by-search { opacity: 0.25; pointer-events:none; }
+    .card summary { cursor:pointer; font-weight:600; color: #c9d1d9; }
+    .card details[open] summary { margin-bottom:0.6rem; }
+    .grid2 { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem; }
+    table.data { width:100%; border-collapse: collapse; font-size:0.82rem; }
+    table.data th, table.data td { border-bottom:1px solid var(--border); padding:0.45rem 0.5rem; text-align:left; vertical-align: top; }
+    table.data th { color: var(--muted); font-weight:500; }
+    .modal-overlay {
+      display:none; position:fixed; inset:0; background: rgba(0,0,0,0.65); z-index:200; align-items:center; justify-content:center; padding:1rem;
+    }
+    .modal-overlay.open { display:flex; }
+    .modal-box {
+      background: var(--bg2); border:1px solid var(--border); border-radius:12px; max-width:720px; max-height:85vh; overflow:auto; padding:1.25rem;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    }
+    .modal-box h3 { margin-top:0; }
+    .modal-close { float:right; background:none; border:none; color: var(--muted); font-size:1.25rem; cursor:pointer; }
+    .flow-step { border-left:3px solid var(--accent); padding-left:0.85rem; margin:0.65rem 0; }
+    .flow-step strong { color: #f0f3f6; }
+    svg.graph { width:100%; height:auto; max-height:420px; background: var(--bg); border-radius:8px; border:1px solid var(--border); }
+    .score-row { display:flex; gap:1rem; flex-wrap:wrap; }
+    .score-box { flex:1; min-width:120px; background: var(--card); padding:0.75rem; border-radius:8px; text-align:center; }
+    .score-box .num { font-size:1.5rem; font-weight:700; color: var(--accent); }
+    .footnote { font-size:0.78rem; color: var(--muted); margin-top:0.5rem; }
+    @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+    section { animation: fadeIn .35s ease; }
+    mark.uncertain { background: rgba(210,153,34,0.25); color: #e3b341; padding:0 0.2rem; border-radius:3px; }
+
+    /* Detailed workflow visualization (§5) */
+    .wf-toolbar { display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; margin-bottom:1rem; }
+    .wf-toolbar span { font-size:0.78rem; color: var(--muted); margin-right:0.5rem; }
+    .wf-filter-btn {
+      background: var(--card); border:1px solid var(--border); color: var(--text);
+      padding:0.35rem 0.65rem; border-radius:6px; cursor:pointer; font-size:0.78rem;
+    }
+    .wf-filter-btn:hover, .wf-filter-btn.active { border-color: var(--accent); color: var(--accent); }
+    svg.wf-map { width:100%; height:auto; max-height:520px; background: var(--bg); border-radius:10px; border:1px solid var(--border); margin-bottom:1.25rem; }
+    .wf-phase { font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:.1em; color: var(--muted); margin:1.25rem 0 0.6rem; padding-bottom:0.25rem; border-bottom:1px dashed var(--border); }
+    .wf-step {
+      position:relative; margin-left:0.5rem; padding-left:1rem; padding-bottom:0.85rem;
+      border-left:2px solid var(--border);
+    }
+    .wf-step:last-child { border-left-color: transparent; }
+    .wf-step::before {
+      content:''; position:absolute; left:-5px; top:0.35rem; width:8px; height:8px; border-radius:50%;
+      background: var(--accent); box-shadow: 0 0 0 3px var(--bg2);
+    }
+    .wf-step-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:0.5rem; margin-bottom:0.35rem; }
+    .wf-step-num { font-size:0.72rem; color: var(--muted); font-weight:600; min-width:2rem; }
+    .wf-step-title { font-weight:600; color: #f0f3f6; font-size:0.9rem; }
+    .wf-b { font-size:0.62rem; padding:0.12rem 0.4rem; border-radius:4px; font-weight:600; letter-spacing:0.04em; }
+    .wf-b.batch { background: rgba(63,185,80,0.15); color: #56d364; }
+    .wf-b.common { background: rgba(163,113,247,0.15); color: #d2a8ff; }
+    .wf-b.ext { background: rgba(210,153,34,0.15); color: #e3b341; }
+    .wf-b.sys { background: rgba(139,148,158,0.2); color: #adb5bd; }
+    .wf-meta { font-size:0.78rem; color: var(--muted); margin-bottom:0.35rem; line-height:1.45; }
+    .wf-meta code { color: #79c0ff; }
+    .wf-detail { font-size:0.8rem; color: #c9d1d9; margin:0; padding-left:1.1rem; }
+    .wf-detail li { margin:0.2rem 0; }
+    .wf-step.hidden-wf { display: none; }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside id="sidebar">
+    <h1>Ingestion Service</h1>
+    <input type="search" id="search" placeholder="Filter sections…" autocomplete="off" />
+    <nav id="nav"></nav>
+  </aside>
+  <main id="main">
+    <div class="sticky-nav">
+      <span class="mono" style="font-size:0.8rem;color:var(--muted)">Repo-accurate · <span id="gen-date"></span></span>
+      <button type="button" data-modal="overview">Overview</button>
+      <button type="button" data-modal="endpoints">Endpoints</button>
+      <button type="button" data-modal="timeouts">Timeout matrix</button>
+      <button type="button" data-modal="errors">Failure matrix</button>
+    </div>
+
+    <section id="s-overview" class="searchable" data-k="overview architecture boundaries upstream downstream">
+      <h2>1. Project overview</h2>
+      <div class="card">
+        <p><strong>What it is:</strong> A FastAPI microservice that scans S3 for already-cleaned PDFs and runs a <strong>PageIndex</strong> pipeline (hosted LLM API + local PDF text extraction) over them in batches, persisting hierarchical nodes + job JSON in PostgreSQL.</p>
+        <p><strong>Not implemented in this repo:</strong> direct file upload endpoint, cleaning service integration, vector embeddings, CSV ingestion, Celery/Redis workers, presigned S3 URLs for clients.</p>
+        <p><strong>Upstream:</strong> An external pipeline writes cleaned PDFs to S3 under <span class="mono">cleaned/{stem}/{doc_id}/</span>; this service is then triggered via <span class="mono">POST /api/ingestion/ingest/run</span> (manually or by automation).</p>
+        <p><strong>Downstream:</strong> AWS S3 (read-only here); PostgreSQL; PageIndex HTTP API (<span class="mono">PAGEINDEX_API_BASE</span>).</p>
+        <p><strong>Boundary:</strong> All heavy PDF parsing + LLM calls live under <span class="mono">app/pageindex/</span>; orchestration in <span class="mono">app/application/ingestion_service.py</span> and <span class="mono">app/services/pageindex_pipeline.py</span>.</p>
+      </div>
+    </section>
+
+    <section id="s-workflow" class="searchable" data-k="workflow visualization execution batch endpoint trigger pipeline pageindex">
+      <h2>2. Workflow</h2>
+      <div class="card">
+        <p>Step-by-step execution derived from <span class="mono">app/</span> sources: which <strong>HTTP endpoint</strong> runs which <strong>handler</strong>, what runs <strong>synchronously vs BackgroundTasks</strong>, and how each batched <span class="mono">doc_id</span> flows through <span class="mono">process_document</span> → PageIndex.</p>
+
+        <!-- High-level swimlane map -->
+        <svg class="wf-map" viewBox="0 0 920 460" xmlns="http://www.w3.org/2000/svg" aria-label="Batch workflow overview">
+          <defs>
+            <marker id="wfa" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6e7681"/></marker>
+            <linearGradient id="lgB" x1="0" x2="1"><stop offset="0" stop-color="#1f4d35"/><stop offset="1" stop-color="#21262d"/></linearGradient>
+            <linearGradient id="lgC" x1="0" x2="1"><stop offset="0" stop-color="#3d2f5c"/><stop offset="1" stop-color="#21262d"/></linearGradient>
+          </defs>
+          <text x="460" y="22" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="600">Overview — single batch path</text>
+          <rect x="360" y="38" width="200" height="34" rx="6" fill="#21262d" stroke="#58a6ff"/><text x="460" y="59" text-anchor="middle" fill="#e6edf3" font-size="11">Client (operator / cron)</text>
+          <line x1="460" y1="72" x2="460" y2="92" stroke="#6e7681" marker-end="url(#wfa)"/>
+          <rect x="260" y="92" width="400" height="120" rx="8" fill="url(#lgB)" stroke="#3fb950" stroke-opacity="0.5"/>
+          <text x="460" y="116" text-anchor="middle" fill="#56d364" font-size="11" font-weight="600">Batch — POST /api/ingestion/ingest/run</text>
+          <text x="460" y="138" text-anchor="middle" fill="#8b949e" font-size="9">409 if already running · else returns 200 with doc_ids</text>
+          <text x="460" y="160" text-anchor="middle" fill="#c9d1d9" font-size="9">list_doc_ids() walks cleaned/ in S3</text>
+          <text x="460" y="180" text-anchor="middle" fill="#c9d1d9" font-size="9">BackgroundTasks: ingestion_service.run()</text>
+          <text x="460" y="200" text-anchor="middle" fill="#c9d1d9" font-size="9">Semaphore (INGESTION_MAX_CONCURRENT_DOCS) + asyncio.gather</text>
+          <line x1="460" y1="212" x2="460" y2="240" stroke="#6e7681" marker-end="url(#wfa)"/>
+          <rect x="260" y="240" width="400" height="56" rx="8" fill="url(#lgC)" stroke="#a371f7" stroke-opacity="0.6"/>
+          <text x="460" y="264" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">Per-doc — ingestion_service.process_document</text>
+          <text x="460" y="284" text-anchor="middle" fill="#8b949e" font-size="9">get_paths · s3_exists(pdf) · pageindex_pipeline.process</text>
+          <line x1="460" y1="296" x2="460" y2="320" stroke="#6e7681" marker-end="url(#wfa)"/>
+          <rect x="210" y="320" width="500" height="72" rx="8" fill="#21262d" stroke="#f85149" stroke-opacity="0.35"/>
+          <text x="460" y="344" text-anchor="middle" fill="#e6edf3" font-size="11">pageindex_pipeline.PageIndexPipeline.process</text>
+          <text x="460" y="364" text-anchor="middle" fill="#8b949e" font-size="9">download temp · asyncio.gather(PageIndex thread + heartbeat)</text>
+          <text x="460" y="382" text-anchor="middle" fill="#8b949e" font-size="9">page_index.page_index → PageIndex API · DB jobs.complete + nodes.replace_for_doc</text>
+          <text x="460" y="438" text-anchor="middle" fill="#6e7681" font-size="9">Scroll down for numbered steps, endpoints, and file:function references.</text>
+        </svg>
+
+        <div class="wf-toolbar">
+          <span>Show steps:</span>
+          <button type="button" class="wf-filter-btn active" data-wf-filter="all">All</button>
+          <button type="button" class="wf-filter-btn" data-wf-filter="batch">Batch entry</button>
+          <button type="button" class="wf-filter-btn" data-wf-filter="common">Per-doc pipeline</button>
+          <button type="button" class="wf-filter-btn" data-wf-filter="external">External HTTP</button>
+          <button type="button" class="wf-filter-btn" data-wf-filter="sys">Startup / infra</button>
+        </div>
+        <div id="workflow-viz"></div>
+        <p class="footnote">Batch ingestion uses FastAPI <span class="mono">BackgroundTasks</span> (same OS process — not Redis/Celery). Cleaned PDFs are expected to already exist in S3; this service does not upload or clean files.</p>
+      </div>
+    </section>
+
+    <section id="s-flow" class="searchable" data-k="workflow diagram pipeline batch">
+      <h2>3. End-to-end ingestion workflow</h2>
+      <div class="card">
+        <p>Single entry: batch ingestion via <span class="mono">POST /api/ingestion/ingest/run</span>. Steps below list <strong>actual</strong> functions present in this repo.</p>
+        <div id="flow-detail"></div>
+      </div>
+    </section>
+
+    <section id="s-api" class="searchable" data-k="api routes openapi swagger">
+      <h2>4. API endpoint explorer</h2>
+      <div id="endpoint-cards"></div>
+    </section>
+
+    <section id="s-files" class="searchable" data-k="files modules dead unused duplicate">
+      <h2>5. Folder &amp; file analysis (every Python file)</h2>
+      <p class="footnote">Each row reflects static analysis of this repository only. <mark class="uncertain">UNVERIFIED</mark> = needs runtime confirmation.</p>
+      <div id="file-cards"></div>
+    </section>
+
+    <section id="s-s3" class="searchable" data-k="s3 boto head download temp">
+      <h2>6. S3 workflow</h2>
+      <div class="card" id="s3-content"></div>
+    </section>
+
+    <section id="s-pageindex" class="searchable" data-k="pageindex toc llm parser">
+      <h2>7. Page indexing engine</h2>
+      <div class="card" id="pageindex-content"></div>
+    </section>
+
+    <section id="s-db" class="searchable" data-k="database postgres sqlalchemy pool">
+      <h2>8. Database architecture</h2>
+      <div class="card" id="db-content"></div>
+    </section>
+
+    <section id="s-config" class="searchable" data-k="environment env pydantic">
+      <h2>9. Configuration center</h2>
+      <div class="card" id="config-content"></div>
+    </section>
+
+    <section id="s-limits" class="searchable" data-k="timeout retry limit semaphore">
+      <h2>10. Timeout / limit / constraint matrix</h2>
+      <div class="card" id="limits-content"></div>
+    </section>
+
+    <section id="s-errors" class="searchable" data-k="failure error exception">
+      <h2>11. Error handling matrix</h2>
+      <div class="card" id="errors-content"></div>
+    </section>
+
+    <section id="s-logging" class="searchable" data-k="logging observability">
+      <h2>12. Logging &amp; observability</h2>
+      <div class="card">
+        <p><strong>Implementation:</strong> <span class="mono">app/core/logging.py</span> wraps the standard logger <span class="mono">ingestion</span> with <span class="mono">StructuredLogger</span>: each log line is one JSON object to stdout (<span class="mono">timestamp</span>, <span class="mono">level</span>, <span class="mono">message</span>, plus any <span class="mono">extra</span> keys).</p>
+        <p><strong>Not present:</strong> OpenTelemetry, Prometheus metrics, request IDs, correlation across BackgroundTasks, log sampling.</p>
+        <p><strong>Health:</strong> <span class="mono">GET /api/ingestion/health</span> returns <span class="mono">degraded</span> if startup DB checks set <span class="mono">app.state.DB_AVAILABLE = False</span>.</p>
+      </div>
+    </section>
+
+    <section id="s-security" class="searchable" data-k="security auth injection">
+      <h2>15. Security review</h2>
+      <div class="card" id="security-content"></div>
+    </section>
+
+    <section id="s-perf" class="searchable" data-k="performance bottleneck memory">
+      <h2>16. Performance analysis</h2>
+      <div class="card" id="perf-content"></div>
+    </section>
+
+    <section id="s-score" class="searchable" data-k="score debt readiness">
+      <h2>17. Architecture health (qualitative)</h2>
+      <div class="card" id="score-content"></div>
+      <p class="footnote">Scores are engineering judgement from code review, not automated metrics. Adjust for your org’s SLOs.</p>
+    </section>
+  </main>
+</div>
+
+<div class="modal-overlay" id="modal-root" role="dialog" aria-modal="true">
+  <div class="modal-box">
+    <button type="button" class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const FILES = [
+    { path: "run.py", purpose: "Dev entry: load_dotenv + uvicorn app.main:app on 127.0.0.1:8000 reload.", imports: "uvicorn, dotenv", calledBy: "Developer CLI", calls: "app.main:app", active: true, dup: false, notes: "NOT USED in production container if another entrypoint is used." },
+    { path: "app/__init__.py", purpose: "Package marker.", imports: "—", calledBy: "—", calls: "—", active: true, dup: false, notes: "" },
+    { path: "app/main.py", purpose: "FastAPI app, lifespan: create_all, SELECT 1, apply_page_index_schema, table existence logs. Mounts api_router at /api/ingestion. Root / redirects to ingest UI.", imports: "fastapi, sqlalchemy.text, db, migrations, routes", calledBy: "uvicorn", calls: "api_router, logger", active: true, dup: false, notes: "" },
+    { path: "app/api/routes/__init__.py", purpose: "Aggregates main + ingest routers into api_router.", imports: "fastapi.APIRouter", calledBy: "main.py", calls: "main.router, ingest.router", active: true, dup: false, notes: "" },
+    { path: "app/api/routes/main.py", purpose: "GET /info, /health, /diagnostics", imports: "fastapi, platform, datetime", calledBy: "FastAPI", calls: "app.state", active: true, dup: false, notes: "" },
+    { path: "app/api/routes/ingest.py", purpose: "Dashboard GET /ingest/, POST /run batch, POST /reset, GET /status.", imports: "fastapi, sqlalchemy session, ingestion_service, s3_reader, repository", calledBy: "HTTP clients", calls: "list_doc_ids, IngestionRunRepository, ingestion_service", active: true, dup: false, notes: "Upload-and-cleaning pipeline removed; batch-only entry." },
+    { path: "app/application/ingestion_service.py", purpose: "IngestionService: run() with semaphore; process_document() idempotency, get_paths+s3_exists, pageindex_pipeline.process.", imports: "asyncio, os, SessionLocal, repositories, pageindex_pipeline, s3_reader", calledBy: "ingest.py", calls: "list_doc_ids, process_document", active: true, dup: false, notes: "_is_running guards run(); only batch entry exists." },
+    { path: "app/core/config.py", purpose: "Pydantic Settings: DATABASE_URL, AWS*, S3_*, PAGEINDEX_API_KEY (required), PAGEINDEX_API_BASE optional.", imports: "pydantic_settings, dotenv", calledBy: "database.py, settings import sites", calls: "load_dotenv", active: true, dup: false, notes: "PAGEINDEX_API_BASE also read in pageindex/utils.py via os.getenv with default URL." },
+    { path: "app/core/logging.py", purpose: "StructuredLogger → JSON lines to stdout.", imports: "logging, json, sys, datetime", calledBy: "Whole app", calls: "print", active: true, dup: false, notes: "" },
+    { path: "app/db/database.py", purpose: "SQLAlchemy engine + SessionLocal + get_db dependency.", imports: "sqlalchemy, settings", calledBy: "repositories, lifespan, routes", calls: "create_engine", active: true, dup: false, notes: "Pool from env: DB_POOL_SIZE 10, MAX_OVERFLOW 20, POOL_TIMEOUT 30." },
+    { path: "app/db/models.py", purpose: "ORM: IngestionRun, PageIndexJob, PageIndexNode.", imports: "sqlalchemy, postgresql JSONB", calledBy: "repository.py", calls: "Base", active: true, dup: false, notes: "" },
+    { path: "app/db/repository.py", purpose: "CRUD: upsert runs, list_recent; job create/complete/fail_latest; nodes replace_for_doc (delete+insert).", imports: "sqlalchemy.orm, uuid", calledBy: "ingest, ingestion_service, pageindex_pipeline", calls: "models", active: true, dup: false, notes: "" },
+    { path: "app/db/page_index_migrations.py", purpose: "apply_page_index_schema(conn): legacy job PK migration, columns, indexes.", imports: "sqlalchemy.text", calledBy: "main lifespan only", calls: "PostgreSQL DDL via text()", active: true, dup: false, notes: "PostgreSQL-specific information_schema." },
+    { path: "app/services/pageindex_pipeline.py", purpose: "PageIndexService.process_pdf → page_index(); pipeline process(): job row, download PDF to temp, gather pageindex+heartbeat, flatten, complete job, replace nodes.", imports: "asyncio, uuid, SessionLocal, repositories, s3_reader", calledBy: "ingestion_service", calls: "page_index, download_s3_to_tempfile", active: true, dup: false, notes: "As implemented: if_add_node_summary/doc_description/node_text/node_id all passed as yes — overrides config.yaml defaults for those keys." },
+    { path: "app/pageindex/__init__.py", purpose: "Re-exports page_index package symbols.", imports: "page_index", calledBy: "External import", calls: "page_index.*", active: true, dup: false, notes: "Star import — broad surface." },
+    { path: "app/pageindex/page_index.py", purpose: "Async tree_parser: check_toc, process_no_toc, LLM calls, fallbacks _build_page_level_structure. page_index_main asyncio.run.", imports: "from .utils import *", calledBy: "pageindex_pipeline via page_index()", calls: "utils llm + PDF helpers", active: true, dup: false, notes: "verify_toc() is STUB: always returns (1.0, []). No OCR engine — text from PDF libs only." },
+    { path: "app/pageindex/utils.py", purpose: "PDF text extraction (PyMuPDF/PyPDF2), cleaning heuristics, _pageindex_chat_completions HTTP, llm_completion/acompletion, ConfigLoader, post_processing, add_node_text, etc.", imports: "litellm (token_counter only), requests, pymupdf, PyPDF2, ...", calledBy: "page_index.py", calls: "PageIndex API", active: true, dup: false, notes: "Large file (~1175 lines). OCR helpers are text cleanup heuristics, not Tesseract." },
+    { path: "app/pageindex/config.yaml", purpose: "Default PageIndex options + model name for ConfigLoader.", imports: "N/A yaml file", calledBy: "ConfigLoader in utils", calls: "—", active: true, dup: false, notes: "Pipeline may override kwargs from PageIndexService." },
+    { path: "app/utils/s3_reader.py", purpose: "boto3 client, list_doc_ids, get_paths, s3_exists, download_s3_to_tempfile, load_doc_domain_fields.", imports: "boto3, settings", calledBy: "ingest, ingestion_service, pageindex_pipeline", calls: "S3 API", active: true, dup: false, notes: "read_json_from_s3 only via load_doc_domain_fields. read_text_from_s3 only inside read_json." },
+  ];
+
+  const ENDPOINTS = [
+    { method: "GET", path: "/", desc: "RedirectResponse → /api/ingestion/ingest/", auth: "None", calls: "main.root_redirect", responses: "302", errors: "—" },
+    { method: "GET", path: "/api/ingestion/info", desc: "Static JSON service metadata.", auth: "None", calls: "main.api_info", responses: "200 application/json", errors: "—" },
+    { method: "GET", path: "/api/ingestion/health", desc: "healthy vs degraded from DB_AVAILABLE.", auth: "None", calls: "main.health", responses: "200 {status, database_connected}", errors: "—" },
+    { method: "GET", path: "/api/ingestion/diagnostics", desc: "UTC timestamp + platform + DB flag.", auth: "None", calls: "main.diagnostics", responses: "200 JSON", errors: "—" },
+    { method: "GET", path: "/api/ingestion/ingest/", desc: "Renders templates/index.html dashboard.", auth: "None", calls: "ingest.dashboard + Jinja2", responses: "200 text/html", errors: "Template missing → 500" },
+    { method: "POST", path: "/api/ingestion/ingest/run", desc: "Batch: list_doc_ids + ingestion_service.run in background.", auth: "None", calls: "ingest.run_ingestion", responses: "200 or 409 if _is_running", errors: "HTTPException 409" },
+    { method: "POST", path: "/api/ingestion/ingest/reset", desc: "Increments in-memory _RESET_VERSION only.", auth: "None", calls: "ingest.reset_results", responses: "200 JSON", errors: "—" },
+    { method: "GET", path: "/api/ingestion/ingest/status", desc: "Last 200 ingestion_runs + reset_version.", auth: "None", calls: "get_db + IngestionRunRepository.list_recent", responses: "200 JSON", errors: "DB errors bubble" },
+  ];
+
+  const FLOW = [
+    { step: "Trigger", detail: "Operator (or cron) calls <code>POST /api/ingestion/ingest/run</code>. No auth middleware in code.", fn: "app/api/routes/ingest.py", risk: "Public ingress if exposed." },
+    { step: "Conflict check", detail: "Returns <code>409</code> if <code>ingestion_service._is_running</code> is true; otherwise schedules background job.", fn: "ingest.run_ingestion", risk: "—" },
+    { step: "List S3 doc_ids", detail: "<code>list_doc_ids()</code> walks <code>cleaned/{stem}/{doc_id}/</code> prefixes in S3.", fn: "app/utils/s3_reader.py", risk: "Slow if many prefixes." },
+    { step: "BackgroundTasks", detail: "<code>ingestion_service.run()</code> runs after the 200 response is returned.", fn: "BackgroundTasks", risk: "Task lost if process dies." },
+    { step: "Semaphore + gather", detail: "<code>asyncio.Semaphore(INGESTION_MAX_CONCURRENT_DOCS)</code> + <code>asyncio.gather(..., return_exceptions=True)</code> over all doc_ids.", fn: "ingestion_service.run", risk: "Tune concurrency vs DB pool / API limits." },
+    { step: "Per-doc orchestration", detail: "<code>process_document</code> → skip if completed; <code>get_paths</code> + <code>s3_exists(pdf)</code> → <code>pageindex_pipeline.process</code>.", fn: "ingestion_service.py + pageindex_pipeline.py", risk: "Missing PDF → failed run." },
+    { step: "PageIndex library", detail: "<code>page_index()</code> parses PDF pages; LLM via PageIndex <code>/chat/completions</code>; local <code>add_node_text</code>.", fn: "app/pageindex/*", risk: "API credits; rate limits." },
+    { step: "Persist", detail: "<code>page_index_jobs.result</code> JSONB + <code>page_index_nodes</code> via <code>replace_for_doc</code>.", fn: "repository.py", risk: "Single DB commit per replace batch." },
+    { step: "Run record", detail: "<code>upsert(completed, pageindex_processed=true)</code> or failed + <code>error_message</code> truncated to 4000 chars.", fn: "ingestion_service.py", risk: "—" },
+  ];
+
+  const LIMITS = [
+    { name: "PageIndex HTTP read", where: "utils._pageindex_chat_completions", value: "PAGEINDEX_READ_TIMEOUT_SEC default 180", effect: "Long LLM responses." },
+    { name: "PageIndex connect", where: "utils._pageindex_chat_completions", value: "15s", effect: "TCP connect timeout." },
+    { name: "PageIndex retries", where: "utils", value: "PAGEINDEX_MAX_RETRIES default 3", effect: "429 exponential backoff; general retry sleep." },
+    { name: "LLM completion retries", where: "llm_completion / llm_acompletion", value: "3 with 1s / exponential backoff", effect: "Empty string after exhaustion." },
+    { name: "Message clamp", where: "_clamp_pageindex_messages", value: "≤48000 chars/message (PageIndex limit 50k)", effect: "Truncates prompts." },
+    { name: "DB pool", where: "database.py", value: "pool 10, overflow 20, timeout 30s", effect: "Pool exhaustion under load." },
+    { name: "Error text", where: "ingestion + pipeline", value: "str(e)[:4000]", effect: "Truncated stored errors." },
+    { name: "Batch concurrency", where: "ingestion_service.run", value: "INGESTION_MAX_CONCURRENT_DOCS default 5", effect: "Limits parallel docs." },
+    { name: "Group concurrency", where: "page_index process_no_toc", value: "PAGEINDEX_GROUP_CONCURRENCY default 3", effect: "Parallel LLM groups." },
+    { name: "Title check concurrency", where: "page_index", value: "PAGEINDEX_CHECK_CONCURRENCY default 5", effect: "Parallel async LLM checks." },
+    { name: "Heartbeat", where: "pageindex_pipeline", value: "PAGEINDEX_HEARTBEAT_SEC default 60", effect: "Touches job.updated_at." },
+    { name: "Status list cap", where: "ingest_status", value: "200 rows", effect: "UI/history depth." },
+    { name: "AWS region default mismatch", where: "get_s3_client vs Settings", value: "ap-south-1 vs us-east-1", effect: "UNVERIFIED wrong-region latency/errors if keys scoped." },
+  ];
+
+  const FAILURES = [
+    { scenario: "PostgreSQL down / migrate fails", behavior: "lifespan sets DB_AVAILABLE=false; /health degraded.", code: "app/main.py" },
+    { scenario: "Missing PAGEINDEX_API_KEY at import", behavior: "Settings validation error — app fails to start.", code: "app/core/config.py + utils _require_pageindex_api_key" },
+    { scenario: "PDF not at get_paths pdf key", behavior: "page_ok false; 'PDF missing in S3'.", code: "ingestion_service" },
+    { scenario: "PageIndex empty structure", behavior: "RuntimeError → fail_latest + ingestion failed.", code: "pageindex_pipeline" },
+    { scenario: "403 InsufficientCredits", behavior: "Raises — no retry in PageIndex client.", code: "utils._pageindex_chat_completions" },
+    { scenario: "Concurrent /run", behavior: "409 Conflict.", code: "ingest.run_ingestion" },
+    { scenario: "Empty cleaned/ in S3", behavior: "list_doc_ids returns []; run completes with no work.", code: "ingestion_service.run" },
+  ];
+
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  /* Section 2 workflow — ordered steps from codebase (batch only) */
+  const WORKFLOW = [
+    { phase: "Startup (infra)", branch: "sys", externalAPI: false, title: "Uvicorn serves FastAPI app", endpoint: "—", handler: "—", file: "run.py → app.main:app", details: ["Loads .env (run.py). Listens 127.0.0.1:8000 with reload in dev."] },
+    { phase: "Startup (infra)", branch: "sys", externalAPI: false, title: "Lifespan: DB + migrations", endpoint: "—", handler: "lifespan()", file: "app/main.py", details: ["create_all(bind=engine); SELECT 1; apply_page_index_schema(conn); verify ingestion_runs / page_index_jobs / page_index_nodes.", "On failure: app.state.DB_AVAILABLE=false → GET /api/ingestion/health returns degraded."] },
+    { phase: "Batch entry", branch: "batch", externalAPI: false, title: "POST batch run", endpoint: "POST /api/ingestion/ingest/run", handler: "run_ingestion", file: "app/api/routes/ingest.py", details: ["If ingestion_service._is_running → HTTP 409 Conflict.", "list_doc_ids() sync in route (S3 cleaned/ walk).", "background_tasks.add_task(ingestion_service.run); returns doc_ids + message immediately.", "Expects cleaned PDFs already in S3 — no upload, no cleaning service."] },
+    { phase: "Batch entry", branch: "batch", externalAPI: false, title: "Background: run batch", endpoint: "—", handler: "IngestionService.run", file: "app/application/ingestion_service.py", details: ["asyncio.Lock: skip if already running.", "list_doc_ids() again inside run().", "Semaphore(INGESTION_MAX_CONCURRENT_DOCS default 5).", "asyncio.gather(..., return_exceptions=True) → process_document per doc_id."] },
+    { phase: "Per-doc — process_document", branch: "common", externalAPI: false, title: "Per-doc session + skip if done", endpoint: "—", handler: "process_document", file: "app/application/ingestion_service.py", details: ["already_processed(doc_id)? → return completed without PageIndex.", "Else upsert(processing)."] },
+    { phase: "Per-doc — process_document", branch: "common", externalAPI: false, title: "Locate cleaned PDF on S3", endpoint: "—", handler: "get_paths + s3_exists", file: "app/utils/s3_reader.py", details: ["get_paths searches cleaned/{stem}/{doc_id}/ for expected PDF key.", "s3_exists uses head_object; missing → failed PDF missing in S3."] },
+    { phase: "Per-doc — process_document", branch: "common", externalAPI: false, title: "Run PageIndex pipeline", endpoint: "—", handler: "await pageindex_pipeline.process", file: "app/services/pageindex_pipeline.py", details: ["On success upsert(completed, pageindex_processed=True); on failure upsert(failed, error[:4000])."] },
+    { phase: "Per-doc — pipeline", branch: "common", externalAPI: false, title: "Skip if prior completed job", endpoint: "—", handler: "jobs.already_completed(doc_id)", file: "app/services/pageindex_pipeline.py", details: ["PageIndexJobRepository: returns ok without re-running if a completed row exists for doc_id."] },
+    { phase: "Per-doc — pipeline", branch: "common", externalAPI: false, title: "Optional domain from cleaned JSON", endpoint: "—", handler: "load_doc_domain_fields", file: "app/utils/s3_reader.py", details: ["Reads stem.json beside PDF when present."] },
+    { phase: "Per-doc — pipeline", branch: "common", externalAPI: false, title: "Insert job row", endpoint: "—", handler: "jobs.create", file: "app/db/repository.py", details: ["hash_id UUID; status processing; options.source_key = pdf_key; capture job.id."] },
+    { phase: "Per-doc — pipeline", branch: "common", externalAPI: false, title: "Download PDF to temp", endpoint: "—", handler: "download_s3_to_tempfile", file: "app/utils/s3_reader.py", details: ["Closes initial DB session before long work."] },
+    { phase: "Per-doc — pipeline", branch: "common", externalAPI: false, title: "Concurrent PageIndex + heartbeat", endpoint: "—", handler: "asyncio.gather", file: "app/services/pageindex_pipeline.py", details: ["to_thread(pageindex_service.process_pdf); heartbeat updates job.updated_at every PAGEINDEX_HEARTBEAT_SEC (default 60)."] },
+    { phase: "Per-doc — pipeline", branch: "common", externalAPI: true, title: "Thread: PDF + PageIndex LLM API", endpoint: "POST {PAGEINDEX_API_BASE}/chat/completions", handler: "page_index → llm_completion / llm_acompletion", file: "app/pageindex/page_index.py, utils.py", details: ["get_page_tokens: PyMuPDF or PyPDF2.", "LLM calls via PageIndex hosted API (api_key header). tree_parser + fallbacks; verify_toc stub returns (1.0, [])."] },
+    { phase: "Per-doc — pipeline", branch: "common", externalAPI: false, title: "Flatten + DB persist", endpoint: "—", handler: "_flatten_structure; jobs.complete; replace_for_doc", file: "app/services/pageindex_pipeline.py", details: ["Empty structure → RuntimeError + fail_latest.", "replace_for_doc deletes old nodes for doc_id then inserts.", "finally: os.remove temp PDF; close sessions."] },
+    { phase: "Other routes", branch: "sys", externalAPI: false, title: "Dashboard HTML", endpoint: "GET /api/ingestion/ingest/", handler: "dashboard", file: "app/api/routes/ingest.py", details: ["Jinja2 templates/index.html."] },
+    { phase: "Other routes", branch: "sys", externalAPI: false, title: "Status JSON", endpoint: "GET /api/ingestion/ingest/status", handler: "ingest_status", file: "app/api/routes/ingest.py", details: ["list_recent(200) ingestion_runs + reset_version."] },
+    { phase: "Other routes", branch: "sys", externalAPI: false, title: "Reset UI counter", endpoint: "POST /api/ingestion/ingest/reset", handler: "reset_results", file: "app/api/routes/ingest.py", details: ["Increments _RESET_VERSION only — no DB change."] },
+  ];
+
+  function renderWorkflow() {
+    let html = "";
+    let phase = "";
+    let n = 0;
+    WORKFLOW.forEach((s) => {
+      if (s.phase !== phase) {
+        phase = s.phase;
+        html += `<div class="wf-phase">${esc(phase)}</div>`;
+      }
+      n++;
+      const bClass = s.branch === "batch" ? "wf-b batch" : s.branch === "common" ? "wf-b common" : "wf-b sys";
+      html += `<div class="wf-step searchable" data-branch="${esc(s.branch)}" data-external="${s.externalAPI}" data-k="${esc(s.title + " " + s.endpoint + " " + s.file)}">`;
+      html += `<div class="wf-step-head"><span class="wf-step-num">#${n}</span><span class="${bClass}">${esc(s.branch)}</span>`;
+      if (s.externalAPI) html += ` <span class="wf-b ext">external HTTP</span>`;
+      html += `<span class="wf-step-title">${esc(s.title)}</span></div>`;
+      html += `<div class="wf-meta"><strong>Endpoint:</strong> ${s.endpoint} · <strong>Handler:</strong> ${esc(s.handler)}<br/><strong>File:</strong> <code>${esc(s.file)}</code></div>`;
+      html += `<ul class="wf-detail">${s.details.map(function (d) { return "<li>" + esc(d) + "</li>"; }).join("")}</ul>`;
+      html += `</div>`;
+    });
+    document.getElementById("workflow-viz").innerHTML = html;
+  }
+
+  function applyWorkflowFilter(mode) {
+    document.querySelectorAll(".wf-filter-btn").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-wf-filter") === mode);
+    });
+    document.querySelectorAll("#workflow-viz .wf-step").forEach(function (el) {
+      const br = el.getAttribute("data-branch");
+      const ext = el.getAttribute("data-external") === "true";
+      let show = true;
+      if (mode === "batch") show = br === "batch";
+      else if (mode === "common") show = br === "common";
+      else if (mode === "external") show = ext;
+      else if (mode === "sys") show = br === "sys";
+      el.classList.toggle("hidden-wf", !show);
+    });
+    document.querySelectorAll("#workflow-viz .wf-phase").forEach(function (ph) {
+      let next = ph.nextElementSibling;
+      let any = false;
+      while (next && !next.classList.contains("wf-phase")) {
+        if (next.classList.contains("wf-step") && !next.classList.contains("hidden-wf")) any = true;
+        next = next.nextElementSibling;
+      }
+      ph.style.display = any ? "" : "none";
+    });
+  }
+
+  function renderFiles() {
+    const el = document.getElementById("file-cards");
+    el.innerHTML = FILES.map(f => `
+      <details class="card searchable" data-k="${esc(f.path + " " + f.purpose + " " + f.notes)}">
+        <summary><code>${esc(f.path)}</code> ${f.active ? '<span class="tag ok">active</span>' : '<span class="tag danger">inactive</span>'}</summary>
+        <table class="data">
+          <tr><th>Purpose</th><td>${esc(f.purpose)}</td></tr>
+          <tr><th>Imports / deps</th><td>${esc(f.imports)}</td></tr>
+          <tr><th>Called by</th><td>${esc(f.calledBy)}</td></tr>
+          <tr><th>Calls</th><td>${esc(f.calls)}</td></tr>
+          <tr><th>Duplicate candidate</th><td>${f.dup ? "POTENTIAL — review" : "Low"}</td></tr>
+          <tr><th>Notes</th><td>${f.notes ? esc(f.notes) : "—"}</td></tr>
+        </table>
+      </details>
+    `).join("");
+  }
+
+  function renderEndpoints() {
+    document.getElementById("endpoint-cards").innerHTML = ENDPOINTS.map(e => `
+      <details class="card searchable" data-k="${esc(e.method + " " + e.path + " " + e.desc)}">
+        <summary><span class="tag">${esc(e.method)}</span> <code>${esc(e.path)}</code></summary>
+        <table class="data">
+          <tr><th>Description</th><td>${esc(e.desc)}</td></tr>
+          <tr><th>Auth</th><td>${esc(e.auth)}</td></tr>
+          <tr><th>Internal calls</th><td>${e.calls}</td></tr>
+          <tr><th>Responses</th><td>${esc(e.responses)}</td></tr>
+          <tr><th>Errors</th><td>${esc(e.errors)}</td></tr>
+        </table>
+      </details>
+    `).join("");
+  }
+
+  function renderFlow() {
+    document.getElementById("flow-detail").innerHTML = FLOW.map((f, i) => `
+      <div class="flow-step searchable" data-k="${esc(f.step + " " + f.detail.replace(/<[^>]+>/g, " ") + " " + f.fn)}">
+        <strong>${i + 1}. ${esc(f.step)}</strong>
+        <div>${f.detail}</div>
+        <div class="footnote">Code: ${esc(f.fn)} · ${f.risk}</div>
+      </div>
+    `).join("");
+  }
+
+  document.getElementById("s3-content").innerHTML = `
+    <p><strong>Bucket:</strong> <span class="mono">settings.S3_BUCKET_NAME</span> (from env). <strong>Credentials:</strong> <span class="mono">AWS_ACCESS_KEY_ID</span> / <span class="mono">AWS_SECRET_ACCESS_KEY</span> — also duplicated read in <span class="mono">get_s3_client()</span> via <span class="mono">os.getenv</span>.</p>
+    <p><strong>List batch docs:</strong> <span class="mono">list_doc_ids()</span> walks <span class="mono">cleaned/</span> two levels: <span class="mono">cleaned/{filename_stem}/{doc_id}/</span>.</p>
+    <p><strong>Resolve PDF path:</strong> <span class="mono">get_paths(doc_id)</span> searches prefixes under cleaned until folder <span class="mono">{stem}/{doc_id}/</span> exists; builds keys <span class="mono">{stem}.pdf|.md|.json</span>. Fallback legacy <span class="mono">cleaned/{doc_id}/</span>.</p>
+    <p><strong>Existence:</strong> <span class="mono">s3_exists(key)</span> uses <span class="mono">head_object</span> — 404/NoSuchKey → false.</p>
+    <p><strong>Download:</strong> <span class="mono">download_s3_to_tempfile</span> — full file via <span class="mono">download_file</span> to <span class="mono">mkstemp</span>; caller deletes.</p>
+      `;
+
+  document.getElementById("pageindex-content").innerHTML = `
+    <p><strong>Entry:</strong> <span class="mono">pageindex_pipeline.PageIndexService.process_pdf</span> → <span class="mono">page_index(doc=path, model=PAGEINDEX_MODEL, kwargs…)</span>.</p>
+    <p><strong>PDF text:</strong> <span class="mono">get_page_tokens()</span> in <span class="mono">utils.py</span> — <span class="mono">PyMuPDF</span> or <span class="mono">PyPDF2</span> per <span class="mono">PAGEINDEX_PDF_PARSER</span> / opt. No Tesseract/OCR pipeline in code — only text cleanup helpers labelled “OCR” heuristics.</p>
+    <p><strong>LLM:</strong> All completions via <span class="mono">POST {PAGEINDEX_API_BASE}/chat/completions</span> with <span class="mono">api_key</span> header. Request JSON does not include <span class="mono">model</span> field in current code — model selection is <mark class="uncertain">server-side PageIndex behavior</mark>; local <span class="mono">config.yaml</span> model used by ConfigLoader for options + token counting.</p>
+    <p><strong>tree_parser:</strong> Runs <span class="mono">check_toc</span> (may call TOC LLM path) then <span class="mono">meta_processor</span> → always <span class="mono">process_no_toc</span> (groups pages → <span class="mono">generate_toc_init</span> LLM). <span class="mono">verify_toc</span> is a <strong>stub</strong> returning <span class="mono">(1.0, [])</span> — does not validate.</p>
+    <p><strong>Fallbacks:</strong> Empty/single-page collision → <span class="mono">_build_page_level_structure</span> (one node per page). Same-page heading collisions in <span class="mono">process_no_toc</span> → return [] then upstream falls through to page-level.</p>
+    <p><strong>Post:</strong> <span class="mono">add_node_text</span> fills node text from page spans; <span class="mono">format_structure</span> orders keys.</p>
+    <p><strong>config.yaml vs pipeline:</strong> YAML sets defaults; <span class="mono">PageIndexService.process_pdf</span> passes explicit kwargs — currently all four flags set to <span class="mono">yes</span> (summary, doc_description, node_text, node_id). Verify <span class="mono">app/services/pageindex_pipeline.py</span> if output shape changes.</p>
+  `;
+
+  document.getElementById("db-content").innerHTML = `
+    <p><strong>ORM:</strong> SQLAlchemy 2.x style declarative. <strong>DB:</strong> PostgreSQL expected (JSONB, information_schema migrations).</p>
+    <table class="data">
+      <tr><th>Setting</th><th>Source</th><th>Value</th></tr>
+      <tr><td>pool_size</td><td>DB_POOL_SIZE</td><td>10</td></tr>
+      <tr><td>max_overflow</td><td>DB_MAX_OVERFLOW</td><td>20</td></tr>
+      <tr><td>pool_timeout</td><td>DB_POOL_TIMEOUT_SEC</td><td>30 seconds</td></tr>
+      <tr><td>pool_pre_ping</td><td>hard-coded</td><td>true</td></tr>
+    </table>
+    <h3>Tables</h3>
+    <table class="data">
+      <tr><th>Table</th><th>Columns (summary)</th><th>Used by</th></tr>
+      <tr><td><span class="mono">ingestion_runs</span></td><td>PK doc_id, status, pageindex_processed, error_message, timestamps</td><td>IngestionRunRepository — ingest + ingestion_service</td></tr>
+      <tr><td><span class="mono">page_index_jobs</span></td><td>serial id, hash_id unique, doc_id, filename, domain, sub_domain, status, options JSON, result JSONB, error, updated_at</td><td>PageIndexJobRepository — pipeline</td></tr>
+      <tr><td><span class="mono">page_index_nodes</span></td><td>uuid id, job_id, doc_id, node_id, parent_id, level, title, content, summary, created_at; index (doc_id, node_id)</td><td>replace_for_doc</td></tr>
+    </table>
+    <p class="footnote">Sessions: synchronous <span class="mono">SessionLocal()</span>; FastAPI <span class="mono">get_db</span> only used on GET status. Background tasks open their own sessions.</p>
+  `;
+
+  document.getElementById("config-content").innerHTML = `
+    <table class="data">
+      <tr><th>Variable</th><th>Required</th><th>Default / notes</th><th>Risk if wrong</th></tr>
+      <tr><td>DATABASE_URL</td><td>Yes</td><td>—</td><td>App won’t connect</td></tr>
+      <tr><td>AWS_ACCESS_KEY_ID / SECRET</td><td>Yes (Settings)</td><td>—</td><td>S3 failures</td></tr>
+      <tr><td>AWS_REGION</td><td>No</td><td>us-east-1 in Settings; ap-south-1 in get_s3_client os.getenv</td><td>Region mismatch</td></tr>
+      <tr><td>S3_BUCKET_NAME</td><td>Yes</td><td>—</td><td>All S3 ops fail</td></tr>
+      <tr><td>S3_CLEANED_PREFIX</td><td>No</td><td>cleaned/</td><td>Wrong listing paths</td></tr>
+      <tr><td>PAGEINDEX_API_KEY</td><td>Yes</td><td>—</td><td>Startup failure</td></tr>
+      <tr><td>PAGEINDEX_API_BASE</td><td>No</td><td>https://api.pageindex.ai</td><td>Wrong endpoint</td></tr>
+      <tr><td>INGESTION_MAX_CONCURRENT_DOCS</td><td>No</td><td>5</td><td>Pool/API pressure</td></tr>
+      <tr><td>PAGEINDEX_*</td><td>No</td><td>Many in utils/page_index</td><td>Cost/latency tuning</td></tr>
+    </table>
+  `;
+
+  document.getElementById("limits-content").innerHTML = `
+    <table class="data">
+      <tr><th>Name</th><th>Where</th><th>Value</th><th>Failure mode</th></tr>
+      ${LIMITS.map(l => `<tr><td>${esc(l.name)}</td><td>${esc(l.where)}</td><td>${esc(l.value)}</td><td>${esc(l.effect)}</td></tr>`).join("")}
+    </table>
+  `;
+
+  document.getElementById("errors-content").innerHTML = `
+    <table class="data">
+      <tr><th>Scenario</th><th>Behavior</th><th>Code ref</th></tr>
+      ${FAILURES.map(f => `<tr><td>${esc(f.scenario)}</td><td>${esc(f.behavior)}</td><td><code>${esc(f.code)}</code></td></tr>`).join("")}
+    </table>
+  `;
+
+  document.getElementById("security-content").innerHTML = `
+    <ul>
+      <li><strong>Authentication / authorization:</strong> None on routes — NOT USED.</li>
+      <li><strong>Upload validation:</strong> No MIME sniffing, no extension allowlist, no max bytes — file written to S3 as-is.</li>
+      <li><strong>SQL injection:</strong> ORM parameterized queries; raw SQL only in migrations with DDL — low risk for app queries.</li>
+      <li><strong>S3 path traversal:</strong> doc_id comes from S3 listing (<code>list_doc_ids</code>) — keys are bucket-controlled, not user-supplied here.</li>
+      <li><strong>Secrets:</strong> Loaded from .env; logging may include doc_id paths — avoid logging secrets.</li>
+    </ul>
+  `;
+
+  document.getElementById("perf-content").innerHTML = `
+    <ul>
+      <li><strong>Memory:</strong> Full PDF downloaded to temp disk per doc; LLM prompts clamped to 48k chars per message.</li>
+      <li><strong>CPU:</strong> <span class="mono">page_index</span> runs <span class="mono">asyncio.run</span> inside thread pool from async pipeline — blocks a thread for whole PDF+LLM duration.</li>
+      <li><strong>S3:</strong> <span class="mono">get_paths</span> may scan many prefixes — O(stems) list calls.</li>
+      <li><strong>DB:</strong> Multiple sessions per document (heartbeat, complete) — connection churn.</li>
+      <li><strong>Parallelism:</strong> Batch run uses semaphore (<code>INGESTION_MAX_CONCURRENT_DOCS</code>); a single in-flight batch is enforced via <code>_is_running</code>.</li>
+    </ul>
+  `;
+
+  document.getElementById("score-content").innerHTML = `
+    <div class="score-row">
+      <div class="score-box"><div class="num">B+</div><div>Architecture clarity</div></div>
+      <div class="score-box"><div class="num">B</div><div>Maintainability</div></div>
+      <div class="score-box"><div class="num">C+</div><div>Production hardening</div></div>
+      <div class="score-box"><div class="num">Medium</div><div>Technical debt</div></div>
+    </div>
+    <p style="margin-top:1rem">Strengths: clear layering (routes → service → pipeline → pageindex); explicit idempotency hooks; structured logs.</p>
+    <p>Gaps: no auth on batch trigger; BackgroundTasks durability; region env mismatch; stub <span class="mono">verify_toc</span>; large vendor <span class="mono">utils.py</span>.</p>
+  `;
+
+  const NAV = [
+    ["Overview", "s-overview"],
+    ["Workflow", "s-workflow"],
+    ["Pipeline overview", "s-flow"],
+    ["API", "s-api"],
+    ["Files", "s-files"],
+    ["S3", "s-s3"],
+    ["PageIndex", "s-pageindex"],
+    ["Database", "s-db"],
+    ["Config", "s-config"],
+    ["Limits", "s-limits"],
+    ["Errors", "s-errors"],
+    ["Logging", "s-logging"],
+    ["Security", "s-security"],
+    ["Performance", "s-perf"],
+    ["Health score", "s-score"],
+  ];
+
+  const navEl = document.getElementById("nav");
+  navEl.innerHTML = NAV.map(([label, id]) =>
+    `<a href="#${id}" data-section="${id}">${esc(label)}</a>`
+  ).join("");
+
+  document.getElementById("gen-date").textContent = new Date().toISOString().slice(0, 10);
+
+  renderFiles();
+  renderEndpoints();
+  renderFlow();
+  renderWorkflow();
+
+  document.querySelectorAll(".wf-filter-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      applyWorkflowFilter(btn.getAttribute("data-wf-filter") || "all");
+    });
+  });
+
+  document.querySelectorAll('#nav a').forEach(a => {
+    a.addEventListener("click", function () {
+      document.querySelectorAll("#nav a").forEach(x => x.classList.remove("active"));
+      this.classList.add("active");
+    });
+  });
+
+  document.getElementById("search").addEventListener("input", function () {
+    const q = this.value.trim().toLowerCase();
+    document.querySelectorAll(".searchable").forEach(el => {
+      const k = (el.getAttribute("data-k") || el.textContent || "").toLowerCase();
+      el.classList.toggle("hidden-by-search", q && !k.includes(q));
+    });
+  });
+
+  const modal = document.getElementById("modal-root");
+  const modalBody = document.getElementById("modal-body");
+  document.getElementById("modal-close").addEventListener("click", () => { modal.classList.remove("open"); });
+  modal.addEventListener("click", e => { if (e.target === modal) modal.classList.remove("open"); });
+
+  const modalContent = {
+    overview: "<h3>Project overview</h3><p>FastAPI batch ingestion service: scans S3 for cleaned PDFs, runs PageIndex structure extraction, persists to PostgreSQL. No upload or cleaning step in this repo.</p>",
+    endpoints: "<h3>Endpoints</h3><p>See section 4 for full table. Base path <code>/api/ingestion</code>.</p>",
+    timeouts: "<h3>Timeout matrix</h3><p>See section 10. Key: PageIndex read 180s; PageIndex connect 15s; DB pool wait 30s.</p>",
+    errors: "<h3>Failure matrix</h3><p>See section 11.</p>"
+  };
+
+  document.querySelectorAll("[data-modal]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      modalBody.innerHTML = modalContent[btn.getAttribute("data-modal")] || "";
+      modal.classList.add("open");
+    });
+  });
+})();
+</script>
+</body>
+</html>

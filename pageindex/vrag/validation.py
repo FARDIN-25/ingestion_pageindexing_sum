@@ -129,12 +129,19 @@ def validate_index(
             comp = (node.get("compressed_content") or "").strip()
             if not comp:
                 errors.append(_err("Missing compressed_content"))
-            elif len(raw) > 400:
-                ratio = compression_ratio(raw, comp)
-                if ratio < 0.35 or ratio > 0.92:
-                    errors.append(_err(f"Compression ratio {ratio:.2f} out of range"))
-            if not (node.get("micro_summary") or "").strip():
+            else:
+                if comp == raw:
+                    errors.append(_err("compressed_content must not be identical to raw_content"))
+                if len(raw) > 400:
+                    ratio = compression_ratio(raw, comp)
+                    if ratio < 0.60 or ratio > 0.80:
+                        errors.append(_err(f"Compression ratio {ratio:.2f} out of range (must be 60-80%)"))
+            
+            micro = (node.get("micro_summary") or "").strip()
+            if not micro:
                 errors.append(_err("Missing micro_summary"))
+            elif len(micro.splitlines()) > 4:
+                errors.append(_err("micro_summary must be <= 4 lines"))
             
             ch = node.get("content_hash") or ""
             if ch != sha256_content(raw):
@@ -152,7 +159,7 @@ def validate_index(
                 errors.append(_err(f"Mega-title ({len(title)} chars)"))
             if not node.get("aliases"):
                 errors.append(_err("Missing aliases"))
-            if not node.get("keywords") and ntype == "CONTENT" and not node.get("is_front_matter"):
+            if not node.get("keywords"):
                 errors.append(_err("Missing keywords"))
             if not node.get("synonyms"):
                 errors.append(_err("Missing synonyms"))

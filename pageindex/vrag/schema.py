@@ -443,18 +443,27 @@ def normalize_node(
         out["type"] = "CONTENT"
         out["level"] = LEVEL["CONTENT"]
         out["raw_content"] = raw
-        legacy_summary = (node.get("summary") or node.get("prefix_summary") or "").strip()
+        
         comp = (node.get("compressed_content") or "").strip()
         if not comp:
-            from .processing import compress_text
-            comp = compress_text(raw)
+            legacy_summary = (node.get("summary") or "").strip()
+            if legacy_summary:
+                ratio = len(legacy_summary) / len(raw) if raw else 0
+                if 0.60 <= ratio <= 0.80 and legacy_summary != raw:
+                    comp = legacy_summary
+            if not comp:
+                from .processing import compress_text
+                comp = compress_text(raw)
         out["compressed_content"] = comp
+        
         micro = (node.get("micro_summary") or "").strip()
-        if not micro or len(micro) > 400:
-            from .processing import micro_summary_from_content
-            micro = micro_summary_from_content(title, comp)
-        elif len(legacy_summary) < 400:
-            micro = legacy_summary[:400]
+        if not micro:
+            legacy_ps = (node.get("prefix_summary") or "").strip()
+            if legacy_ps and len(legacy_ps.splitlines()) <= 4:
+                micro = legacy_ps
+            else:
+                from .processing import micro_summary_from_content
+                micro = micro_summary_from_content(title, comp)
         out["micro_summary"] = micro
         enrich_node(out)
         out["retrieval_ready"] = False

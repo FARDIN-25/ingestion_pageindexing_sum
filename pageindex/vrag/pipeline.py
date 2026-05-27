@@ -1,17 +1,9 @@
 from __future__ import annotations
-# --- indexer.py ---
-"""Backward-compatible entry — delegates to production pipeline."""
+"""Vectorless RAG: lexical retrieval and production build pipeline."""
 
 from typing import Any
 
-
 from .validation import ValidationError
-
-
-
-
-# --- retrieval.py ---
-"""Explainable lexical retrieval — 9-stage vectorless pipeline."""
 
 import math
 import re
@@ -373,6 +365,7 @@ def search(structure: Any, query: str, top_k: int = 5) -> list[dict]:
     return LexicalRetriever(structure).search(query, top_k=top_k)
 
 
+
 TEST_QUERIES = [
     ("what is GST REG 06", ["reg", "06", "6.2"]),
     ("how to download GST registration certificate", ["certificate", "registration", "download", "6.2"]),
@@ -411,9 +404,6 @@ def run_test_queries(retriever: LexicalRetriever) -> dict[str, Any]:
     report["pass_rate"] = report["passed"] / max(report["total"], 1)
     return report
 
-
-# --- pipeline.py ---
-"""Production vectorless RAG build pipeline with readiness gating."""
 
 import json
 import os

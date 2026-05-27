@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from pageindex.utils import ConfigLoader
+from pageindex.config import ConfigLoader
 from pageindex.vrag import build_index as build_vrag_index
 
 

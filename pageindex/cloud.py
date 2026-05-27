@@ -242,16 +242,6 @@ def get_client() -> PageIndexAPI:
     return PageIndexAPI(api_key=get_api_key())
 
 
-"""Index PDFs via PageIndex cloud API with schema normalization and readiness gating."""
-
-import time
-import uuid
-from pathlib import Path
-from typing import Any
-
-from pageindex.log_util import log_info
-
-
 
 
 def build_cloud_index(

@@ -1,6 +1,5 @@
 from __future__ import annotations
-# --- config.py ---
-"""Build-time configuration for vectorless RAG pipeline."""
+"""Build configuration, schema models, normalizer, and metadata for vectorless RAG."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -44,9 +43,6 @@ class BuildConfig:
             return cls.from_dict(opt)
         return cls.from_dict({k: v for k, v in vars(opt).items() if not k.startswith("_")})
 
-
-# --- models.py ---
-"""Production vectorless RAG index schema (v2.2)."""
 
 from typing import Any
 
@@ -181,9 +177,6 @@ def finalize_children(node: dict[str, Any]) -> None:
     for c in children:
         finalize_children(c)
 
-
-# --- metadata.py ---
-"""Lexical retrieval metadata: aliases, keywords, synonyms, content_hash."""
 
 import re
 
@@ -320,9 +313,6 @@ def enrich_node(node: dict) -> None:
     syns = _extract_synonyms(aliases, node.get("title", ""))
     node["synonyms"] = syns if syns else list(aliases[:8])
 
-
-# --- schema_normalizer.py ---
-"""Normalize legacy cloud/LLM tree nodes to explicit 3-content schema."""
 
 import re
 from typing import Any

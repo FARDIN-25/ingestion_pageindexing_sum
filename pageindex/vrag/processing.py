@@ -1,7 +1,6 @@
 from __future__ import annotations
+"""Text processing, deduplication, chunking, and compression utilities for vectorless RAG."""
 from .schema import LEVEL
-# --- text_utils.py ---
-"""Shared text normalization and similarity for dedup / validation."""
 
 import hashlib
 import re
@@ -83,7 +82,6 @@ def is_paragraph_title(text: str) -> bool:
     return False
 
 
-# --- sanitizer.py ---
 """Text sanitation: OCR cleanup, normalization, garbage removal."""
 
 import re
@@ -209,7 +207,6 @@ def sanitize_raw_content(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-# --- headings.py ---
 """Deterministic heading detection — structural titles only."""
 
 import re
@@ -385,7 +382,6 @@ def detect_headings(doc_lines: list[DocLine]) -> list[dict]:
     return headings
 
 
-# --- extractor.py ---
 """PDF extraction — line-level with font metadata and sanitation."""
 
 from dataclasses import dataclass
@@ -445,7 +441,6 @@ def lines_to_text(doc_lines: list[DocLine], start: int, end: int) -> str:
     return "\n".join(doc_lines[i].text for i in range(start, min(end, len(doc_lines)))).strip()
 
 
-# --- chunker.py ---
 """Semantic chunking — one concept per CONTENT node, structural titles only."""
 
 import re
@@ -623,7 +618,6 @@ def semantic_chunks(
     return _filter_adjacent_overlap(out, overlap_adjacent_threshold)
 
 
-# --- dedup.py ---
 """Content deduplication: SHA256 exact hash + overlap rejection."""
 
 from dataclasses import dataclass
@@ -679,7 +673,6 @@ class ContentDeduplicator:
         return jaccard_similarity(pn, cn) >= 0.92
 
 
-# --- compressor.py ---
 """Rule-based semantic compression (60–80% retention, not summarization)."""
 
 import re
@@ -778,7 +771,6 @@ def compress_text(raw: str, target_ratio: float = 0.70, min_ratio: float = 0.60)
     return "\n".join(kept).strip() if kept else raw.strip()
 
 
-# --- summarizer.py ---
 """Micro-summary generation (2–4 lines, routing only)."""
 
 import re

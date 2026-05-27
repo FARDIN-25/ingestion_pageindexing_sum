@@ -1,6 +1,5 @@
 from __future__ import annotations
-# --- validator.py ---
-"""Production index validation — fail build on any integrity violation."""
+"""Production index validation and retrieval readiness gating."""
 
 import re
 from typing import Any
@@ -226,9 +225,6 @@ def validate_index(
         raise ValidationError(errors)
     return errors
 
-
-# --- readiness.py ---
-"""Retrieval readiness gating — true only when all production checks pass."""
 
 import re
 from typing import Any

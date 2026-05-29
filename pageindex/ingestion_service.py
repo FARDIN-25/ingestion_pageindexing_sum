@@ -62,6 +62,8 @@ class IngestionService:
                 repo.upsert_job(doc_id, status="failed", error_message="PDF missing in S3")
                 log_error("Doc %s: PDF missing in S3.", doc_id)
                 return
+            file_name = Path(pdf_key).name
+            repo.upsert_job(doc_id, status="processing", file_name=file_name)
 
             # Download
             temp_path = download_s3_to_tempfile(pdf_key)
@@ -71,7 +73,7 @@ class IngestionService:
             result = await loop.run_in_executor(None, self._run_pipeline, temp_path, doc_id)
 
             # Flatten nodes
-            structure = result.get("structure")
+            structure = result.get("structure_vrag") or result.get("structure")
             if structure:
                 tree_nodes = structure if isinstance(structure, list) else structure.get("nodes", [])
                 
@@ -84,13 +86,16 @@ class IngestionService:
                 
                 repo.replace_nodes(doc_id, flat_nodes)
                 
-            repo.upsert_job(doc_id, status="completed", results=result)
+            repo.upsert_job(doc_id, status="completed", results=result, file_name=file_name)
             log_info("Doc %s successfully ingested.", doc_id)
 
         except Exception as e:
+            from pageindex.api_errors import format_user_error
+
             log_exception("Error processing doc_id %s: %s", doc_id, e)
             db.rollback()  # Rollback any failed transactions so upsert_job doesn't fail with PendingRollbackError
-            repo.upsert_job(doc_id, status="failed", error_message=str(e)[:4000])
+            fn = locals().get("file_name")
+            repo.upsert_job(doc_id, status="failed", error_message=format_user_error(e)[:4000], file_name=fn)
         finally:
             db.close()
             # Cleanup temp file

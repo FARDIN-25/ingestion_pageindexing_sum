@@ -347,10 +347,12 @@
       queueGrid.innerHTML = jobs.map(job => `
         <div class="job-card" onclick="openTree('${job.doc_id}', '${job.status}')">
           <div class="badge ${job.status}">${job.status}</div>
-          <div style="font-weight: 600; color: #fff; margin-bottom: 4px;">Document</div>
+          <div style="font-weight: 600; color: #fff; margin-bottom: 4px;">
+            ${job.seq_id != null ? `#${job.seq_id} ` : ''}${escapeHtml(job.file_name || 'Document')}
+          </div>
           <div class="job-id">${job.doc_id}</div>
           <div class="job-date">${new Date(job.created_at).toLocaleString()}</div>
-          ${job.error_message ? `<div class="error-msg">${escapeHtml(job.error_message.slice(0,100))}...</div>` : ''}
+          ${job.error_message ? `<div class="error-msg">${escapeHtml(job.error_message)}</div>` : ''}
         </div>
       `).join('');
     }

@@ -64,8 +64,10 @@ async def lifespan(app: FastAPI):
 
     try:
         from pageindex.db.database import Base, engine
+        from pageindex.db.database import ensure_schema
         import pageindex.db.models  # Required for Base.metadata to discover the tables
         Base.metadata.create_all(bind=engine)
+        ensure_schema()
         log_info("Database tables verified.")
     except Exception as e:
         log_error("Failed to initialize database: %s", e)
@@ -136,22 +138,9 @@ def process_pdf(pdf_path: str, opt, job_id: str | None = None) -> dict:
 
 
 def friendly_error(exc: Exception) -> str:
-    msg = str(exc)
-    low = msg.lower()
-    if "openrouter" in low:
-        return (
-            "OpenRouter is disabled in this app. Restart with .\\start.ps1 "
-            "and ensure PAGEINDEX_API_KEY is set in .env (not OPENROUTER_API_KEY)."
-        )
-    if "pageindex_api_key" in low or ("api key" in low and "pageindex" in low):
-        return "Set PAGEINDEX_API_KEY in .env — https://dash.pageindex.ai/api-keys"
-    if "401" in low or "403" in low or "authentication" in low or "invalid" in low and "key" in low:
-        return "Invalid PAGEINDEX_API_KEY — check https://dash.pageindex.ai/api-keys"
-    if "402" in low or "credit" in low or "quota" in low or "payment" in low:
-        return "PageIndex API credits exhausted — add credits at https://dash.pageindex.ai"
-    if "timed out" in low:
-        return "PageIndex API timed out waiting for document processing. Try again."
-    return msg
+    from pageindex.api_errors import format_user_error
+
+    return format_user_error(exc)
 
 
 app = FastAPI(title="PageIndex UI", lifespan=lifespan)
@@ -353,6 +342,38 @@ async def process_upload(file: UploadFile = File(...)):
         log_info("Wrote results: %s", output_path)
         log_info("doc_id=%s | pages=%s | job_id=%s", result.get("doc_id"), result.get("page_count"), result.get("job_id"))
         log_info("-" * 50)
+
+        try:
+            from pageindex.db.database import SessionLocal
+            from pageindex.db.repository import IngestionRepository
+
+            doc_id = result.get("doc_id") or job_id
+            db = SessionLocal()
+            repo = IngestionRepository(db)
+            repo.upsert_job(doc_id, status="completed", results=result, file_name=safe_name)
+
+            structure = result.get("structure_vrag") or result.get("structure")
+            if structure:
+                tree_nodes = structure if isinstance(structure, list) else structure.get("nodes", [])
+                flat_nodes: list[dict] = []
+
+                def flatten(nodes):
+                    for n in nodes:
+                        if isinstance(n, dict):
+                            flat_nodes.append(n)
+                            flatten(n.get("nodes", []))
+
+                flatten(tree_nodes)
+                if flat_nodes:
+                    repo.replace_nodes(doc_id, flat_nodes)
+        except Exception as e:
+            log_error("DB persist skipped/failed: %s", e)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
         if result.get("usage"):
             result["usage_dashboard_url"] = f"/usage?job_id={result.get('job_id', job_id)}"
         return JSONResponse(content=result)
@@ -379,8 +400,60 @@ async def list_jobs():
     from pageindex.db.models import DocumentJob
     db = SessionLocal()
     try:
-        jobs = db.query(DocumentJob).order_by(DocumentJob.created_at.desc()).limit(100).all()
-        return {"jobs": [{"doc_id": j.doc_id, "status": j.status, "error_message": j.error_message, "created_at": j.created_at.isoformat()} for j in jobs]}
+        jobs = (
+            db.query(DocumentJob)
+            .order_by(DocumentJob.seq_id.asc().nulls_last(), DocumentJob.created_at.asc())
+            .limit(100)
+            .all()
+        )
+        return {
+            "jobs": [
+                {
+                    "seq_id": j.seq_id,
+                    "file_name": j.file_name,
+                    "doc_id": j.doc_id,
+                    "status": j.status,
+                    "error_message": j.error_message,
+                    "created_at": j.created_at.isoformat() if j.created_at else None,
+                }
+                for j in jobs
+            ]
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/ingestion/nodes")
+async def list_all_nodes(limit: int = 500, offset: int = 0):
+    """Flat node list sorted by seq_id ASC, then node_id ASC."""
+    from pageindex.db.database import SessionLocal
+    from pageindex.db.models import DocumentNode
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(DocumentNode)
+            .order_by(DocumentNode.seq_id.asc().nulls_last(), DocumentNode.node_id.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "nodes": [
+                {
+                    "seq_id": n.seq_id,
+                    "doc_id": n.doc_id,
+                    "file_name": n.file_name,
+                    "node_id": n.node_id,
+                    "parent_id": n.parent_id,
+                    "type": n.type,
+                    "title": n.title,
+                    "level": n.level,
+                    "retrieval_ready": n.retrieval_ready,
+                }
+                for n in rows
+            ]
+        }
     finally:
         db.close()
 
@@ -389,16 +462,23 @@ async def list_jobs():
 async def get_job_tree(doc_id: str):
     from pageindex.db.database import SessionLocal
     from pageindex.db.models import DocumentNode
+    from pageindex.db.node_order import sort_tree_nodes
+
     db = SessionLocal()
     try:
-        nodes = db.query(DocumentNode).filter(DocumentNode.doc_id == doc_id).all()
+        nodes = (
+            db.query(DocumentNode)
+            .filter(DocumentNode.doc_id == doc_id)
+            .order_by(DocumentNode.seq_id.asc().nulls_last(), DocumentNode.node_id.asc())
+            .all()
+        )
         if not nodes:
             raise HTTPException(status_code=404, detail="Tree not found for this document.")
-        
-        # Reconstruct tree from flat nodes
+
         node_map = {}
         for n in nodes:
             node_map[n.node_id] = {
+                "seq_id": n.seq_id,
                 "node_id": n.node_id,
                 "parent_id": n.parent_id,
                 "type": n.type,
@@ -406,16 +486,17 @@ async def get_job_tree(doc_id: str):
                 "level": n.level,
                 "retrieval_ready": n.retrieval_ready,
                 "micro_summary": n.micro_summary,
-                "nodes": []
+                "nodes": [],
             }
-            
+
         root_nodes = []
         for n in nodes:
             if n.parent_id and n.parent_id in node_map:
                 node_map[n.parent_id]["nodes"].append(node_map[n.node_id])
             else:
                 root_nodes.append(node_map[n.node_id])
-                
+
+        sort_tree_nodes(root_nodes)
         return {"structure": root_nodes}
     finally:
         db.close()

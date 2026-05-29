@@ -6,7 +6,9 @@ from .database import Base
 class DocumentJob(Base):
     __tablename__ = "document_jobs"
 
+    seq_id = Column(Integer, unique=True, index=True, nullable=True)
     doc_id = Column(String, primary_key=True, index=True)
+    file_name = Column(String, nullable=True)
     status = Column(String, default="pending", nullable=False)  # pending, processing, completed, failed
     error_message = Column(Text, nullable=True)
     results = Column(JSONB, nullable=True)  # full json response from pageindex
@@ -17,8 +19,10 @@ class DocumentJob(Base):
 class DocumentNode(Base):
     __tablename__ = "document_nodes"
 
-    id = Column(String, primary_key=True)  # uuid
+    seq_id = Column(Integer, index=True, nullable=True)
     doc_id = Column(String, ForeignKey("document_jobs.doc_id", ondelete="CASCADE"), nullable=False, index=True)
+    file_name = Column(String, nullable=True)
+    id = Column(String, primary_key=True)  # uuid
     node_id = Column(String, nullable=False)
     parent_id = Column(String, nullable=True)
     type = Column(String, nullable=False)
@@ -39,4 +43,5 @@ class DocumentNode(Base):
 
     __table_args__ = (
         Index("ix_document_nodes_doc_node", "doc_id", "node_id"),
+        Index("ix_document_nodes_seq_node", "seq_id", "node_id"),
     )

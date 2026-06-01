@@ -23,7 +23,7 @@ if not PDF.exists():
 
 
 def test_schema_version():
-    assert SCHEMA_VERSION == "2.3"
+    assert SCHEMA_VERSION == "2.4"
 
 
 def test_physical_index_stripped():
@@ -57,8 +57,7 @@ def test_readiness_false_on_errors():
             "path": "ROOT > 6.1 Test",
             "parent_id": "r1",
             "raw_content": "x" * 100,
-            "compressed_content": "y" * 80,
-            "micro_summary": "Test section.",
+            "micro_summary": "Test section about content.",
             "aliases": ["6.1"],
             "keywords": ["test"],
             "synonyms": ["6.1"],
@@ -112,7 +111,7 @@ def test_full_build_retrieval_ready():
     result = build_index(str(PDF), opt=opt)
     assert result["retrieval_ready"] is True
     assert result["readiness"]["retrieval_ready"] is True
-    assert result["schema_version"] == "2.3"
+    assert result["schema_version"] == "2.4"
     for n in result["flat_nodes"]:
         assert n["retrieval_ready"] is True
         assert n.get("raw_content")

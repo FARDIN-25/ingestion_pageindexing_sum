@@ -46,44 +46,58 @@ class BuildConfig:
 
 from typing import Any
 
-SCHEMA_VERSION = "2.3"
+SCHEMA_VERSION = "2.4"
 
 
 NODE_TYPES = frozenset({
-    "ROOT", "FRONT_MATTER",
+    "ROOT", "DOCUMENT", "FRONT_MATTER", "CHAPTER", "APPENDIX",
+    "TABLE_OF_CONTENTS",
     "PREFACE", "COURSE_INFO", "OBJECTIVES", "SYLLABUS", "REFERENCES",
     "SECTION", "UNIT", "TOPIC", "SUBTOPIC", "CONTENT",
 })
 
 LEVEL = {
     "ROOT": 0,
-    "FRONT_MATTER": 1,
-    "PREFACE": 2,
-    "COURSE_INFO": 2,
-    "OBJECTIVES": 2,
-    "SYLLABUS": 2,
-    "REFERENCES": 2,
-    "SECTION": 2,
-    "UNIT": 3,
-    "TOPIC": 4,
-    "SUBTOPIC": 5,
-    "CONTENT": 6,
+    "DOCUMENT": 1,
+    "FRONT_MATTER": 2,
+    "CHAPTER": 2,
+    "APPENDIX": 2,
+    "TABLE_OF_CONTENTS": 3,
+    "PREFACE": 3,
+    "COURSE_INFO": 3,
+    "OBJECTIVES": 3,
+    "SYLLABUS": 3,
+    "REFERENCES": 3,
+    "SECTION": 3,
+    "UNIT": 4,
+    "TOPIC": 5,
+    "SUBTOPIC": 6,
+    "CONTENT": 7,
 }
 
 VALID_PARENT: dict[str, frozenset[str]] = {
-    "ROOT": frozenset({"FRONT_MATTER", "SECTION"}),
+    "ROOT": frozenset({"DOCUMENT"}),
+    "DOCUMENT": frozenset({"FRONT_MATTER", "CHAPTER", "APPENDIX", "SECTION"}),
     "FRONT_MATTER": frozenset({
-        "PREFACE", "COURSE_INFO", "OBJECTIVES", "SYLLABUS", "REFERENCES", "CONTENT",
+        "TABLE_OF_CONTENTS", "PREFACE", "COURSE_INFO", "OBJECTIVES",
+        "SYLLABUS", "REFERENCES", "CONTENT",
     }),
+    "CHAPTER": frozenset({"SECTION", "UNIT", "TOPIC", "SUBTOPIC", "CONTENT"}),
+    "APPENDIX": frozenset({"SECTION", "TOPIC", "SUBTOPIC", "CONTENT"}),
     "SECTION": frozenset({"UNIT", "TOPIC", "SUBTOPIC", "CONTENT"}),
     "UNIT": frozenset({"TOPIC", "SUBTOPIC", "CONTENT"}),
     "TOPIC": frozenset({"SUBTOPIC", "CONTENT"}),
     "SUBTOPIC": frozenset({"CONTENT"}),
 }
 
-CONTAINER_TYPES = frozenset({"ROOT", "FRONT_MATTER", "SECTION", "UNIT", "TOPIC", "SUBTOPIC"})
-FRONT_MATTER_TYPES = frozenset({"PREFACE", "COURSE_INFO", "OBJECTIVES", "SYLLABUS", "REFERENCES"})
-RETRIEVAL_TYPES = frozenset({"CONTENT", "PREFACE", "OBJECTIVES", "SYLLABUS", "REFERENCES"})
+CONTAINER_TYPES = frozenset({
+    "ROOT", "DOCUMENT", "FRONT_MATTER", "CHAPTER", "APPENDIX",
+    "SECTION", "UNIT", "TOPIC", "SUBTOPIC",
+})
+FRONT_MATTER_TYPES = frozenset({
+    "TABLE_OF_CONTENTS", "PREFACE", "COURSE_INFO", "OBJECTIVES", "SYLLABUS", "REFERENCES",
+})
+RETRIEVAL_TYPES = frozenset({"CONTENT"})
 BODY_RETRIEVAL_TYPES = frozenset({"CONTENT"})
 
 # Legacy alias map
@@ -97,6 +111,14 @@ NODE_FIELDS = [
     "token_count_raw", "token_count_compressed", "content_hash",
     "retrieval_ready",
 ]
+
+FORBIDDEN_EXPORT_FIELDS = frozenset({
+    "text", "summary", "prefix_summary", "content",
+})
+
+
+def _split_micro_sentences(text: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if s.strip()]
 
 
 def normalize_type(node_type: str) -> str:
@@ -144,10 +166,8 @@ def empty_node(
 def export_node(node: dict[str, Any], include_children: bool = True) -> dict[str, Any]:
     children = node.get("nodes") or []
     out: dict[str, Any] = {}
-    # Explicit 3-content schema only — no summary/prefix_summary/text
-    node.pop("text", None)
-    node.pop("summary", None)
-    node.pop("prefix_summary", None)
+    for key in FORBIDDEN_EXPORT_FIELDS:
+        node.pop(key, None)
     for k in NODE_FIELDS:
         if k == "children":
             out[k] = [c["node_id"] for c in children if c.get("node_id")]
@@ -233,10 +253,10 @@ def extract_aliases(title: str, raw: str) -> list[str]:
     return aliases[:14]
 
 
-def extract_keywords(title: str, raw: str, compressed: str) -> list[str]:
+def extract_keywords(title: str, raw: str) -> list[str]:
     kws: list[str] = []
     seen: set[str] = set()
-    blob = f"{title} {compressed[:2000]} {raw[:1200]}".lower()
+    blob = f"{title} {raw[:3200]}".lower()
 
     def add(k: str):
         k = k.strip()
@@ -299,17 +319,31 @@ def _extract_synonyms(aliases: list[str], title: str) -> list[str]:
     return syn[:18]
 
 
-def enrich_node(node: dict) -> None:
+def enrich_node(node: dict, cfg: BuildConfig | None = None) -> None:
     raw = node.get("raw_content") or ""
     if not raw:
         return
+    build_cfg = cfg or BuildConfig()
+    from .processing import compress_text, compression_ratio
+
+    compressed = compress_text(
+        raw,
+        target_ratio=build_cfg.compression_target_ratio,
+        min_ratio=build_cfg.compression_min_ratio,
+    )
+    if len(raw) > 400 and compression_ratio(raw, compressed) > 0.92:
+        compressed = compress_text(
+            raw,
+            target_ratio=max(0.60, build_cfg.compression_min_ratio),
+            min_ratio=build_cfg.compression_min_ratio,
+        )
+    node["compressed_content"] = compressed
     node["content_hash"] = content_hash(raw)
     node["token_count_raw"] = token_count(raw)
-    comp = node.get("compressed_content") or ""
-    node["token_count_compressed"] = token_count(comp)
+    node["token_count_compressed"] = token_count(compressed)
     aliases = extract_aliases(node.get("title", ""), raw)
     node["aliases"] = aliases
-    node["keywords"] = extract_keywords(node.get("title", ""), raw, comp)
+    node["keywords"] = extract_keywords(node.get("title", ""), raw)
     syns = _extract_synonyms(aliases, node.get("title", ""))
     node["synonyms"] = syns if syns else list(aliases[:8])
 
@@ -399,7 +433,7 @@ def normalize_node(
     parent: dict,
     counter: list[int],
 ) -> dict | None:
-    from .processing import sanitize_raw_content, contains_garbage_artifact
+    from .processing import sanitize_raw_content, contains_garbage_artifact, container_micro_summary
     if not isinstance(node, dict):
         return None
 
@@ -411,16 +445,13 @@ def normalize_node(
             raw = sanitize_raw_content(legacy_text)
 
     has_body = len(raw) >= 20
-    ntype = _infer_cloud_node_type(node, has_body)
-    if has_body and ntype in ("TOPIC", "SUBTOPIC", "PREFACE", "SYLLABUS", "UNIT"):
-        ntype = "CONTENT"
+    ntype = _infer_cloud_node_type(node, has_body and not children_in)
 
     title = _infer_structural_title(node)
     parent_path = parent.get("path") or "ROOT"
     path = f"{parent_path} > {title}"
-    level = LEVEL.get(ntype, 4)
 
-    out = empty_node(title, ntype, path, level, parent["node_id"])
+    out = empty_node(title, ntype, path, LEVEL.get(ntype, 4), parent["node_id"])
     counter[0] += 1
     out["node_id"] = node.get("node_id") or f"cloud_{counter[0]:05d}"
     out["parent_id"] = parent["node_id"]
@@ -429,39 +460,40 @@ def normalize_node(
     out["page_start"], out["page_end"] = ps, pe
     out["char_start"], out["char_end"] = cs, ce
 
-    if has_body and not contains_garbage_artifact(raw):
-        out["type"] = "CONTENT"
-        out["level"] = LEVEL["CONTENT"]
-        out["raw_content"] = raw
-        
-        comp = (node.get("compressed_content") or "").strip()
-        if not comp:
-            legacy_summary = (node.get("summary") or "").strip()
-            if legacy_summary:
-                ratio = len(legacy_summary) / len(raw) if raw else 0
-                if 0.60 <= ratio <= 0.80 and legacy_summary != raw:
-                    comp = legacy_summary
-            if not comp:
-                from .processing import compress_text
-                comp = compress_text(raw)
-        out["compressed_content"] = comp
-        
-        micro = (node.get("micro_summary") or "").strip()
-        if not micro:
-            legacy_ps = (node.get("prefix_summary") or "").strip()
-            if legacy_ps and len(legacy_ps.splitlines()) <= 4:
-                micro = legacy_ps
-            else:
-                from .processing import micro_summary_from_content
-                micro = micro_summary_from_content(title, comp)
-        out["micro_summary"] = micro
-        enrich_node(out)
-        out["retrieval_ready"] = False
-
     for ch in children_in:
         child = normalize_node(ch, out, counter)
         if child:
             out["nodes"].append(child)
+
+    # Branch nodes: keep structure only (PageIndex often puts section text on parents).
+    if out["nodes"]:
+        branch_type = ntype if ntype in CONTAINER_TYPES else "TOPIC"
+        out["type"] = branch_type
+        out["level"] = LEVEL[branch_type]
+        out["raw_content"] = ""
+        out["micro_summary"] = container_micro_summary(title, [c.get("title", "") for c in out["nodes"]])
+        out["content_hash"] = ""
+        out["token_count_raw"] = 0
+        out["retrieval_ready"] = False
+    elif has_body and not contains_garbage_artifact(raw):
+        out["type"] = "CONTENT"
+        out["level"] = LEVEL["CONTENT"]
+        out["raw_content"] = raw
+
+        micro = (node.get("micro_summary") or "").strip()
+        if not micro:
+            legacy_ps = (node.get("prefix_summary") or "").strip()
+            legacy_summary = (node.get("summary") or "").strip()
+            if legacy_ps and len(_split_micro_sentences(legacy_ps)) <= 3:
+                micro = legacy_ps
+            elif legacy_summary and len(_split_micro_sentences(legacy_summary)) <= 3:
+                micro = legacy_summary
+            else:
+                from .processing import micro_summary_from_content
+                micro = micro_summary_from_content(title, raw)
+        out["micro_summary"] = micro
+        enrich_node(out)
+        out["retrieval_ready"] = False
 
     out["children"] = [c["node_id"] for c in out["nodes"]]
     out["children_ids"] = out["children"]
@@ -469,47 +501,10 @@ def normalize_node(
 
 
 def normalize_cloud_structure(structure: Any) -> dict[str, Any]:
-    """
-    Convert PageIndex cloud tree to strict VRAG hierarchy:
-    ROOT → FRONT_MATTER | SECTION → (UNIT | TOPIC | CONTENT)*
+    """Delegate to cloud_normalize (preserves API nesting)."""
+    from .cloud_normalize import normalize_cloud_structure as _normalize_cloud
 
-    Cloud API nodes are never attached directly under ROOT.
-    """
-    counter = [0]
-    root = empty_node("ROOT", "ROOT", "ROOT", 0)
-    root["node_id"] = "root_0001"
-
-    fm = empty_node("Front Matter", "FRONT_MATTER", "ROOT/FRONT_MATTER", LEVEL["FRONT_MATTER"], root["node_id"])
-    fm["node_id"] = "fm_0001"
-    root["nodes"].append(fm)
-
-    section = empty_node("Document", "SECTION", "ROOT/SECTION/DOCUMENT", LEVEL["SECTION"], root["node_id"])
-    section["node_id"] = "sec_0001"
-    root["nodes"].append(section)
-
-    items: list[Any] = []
-    if isinstance(structure, list):
-        items = structure
-    elif isinstance(structure, dict):
-        if structure.get("nodes"):
-            items = structure["nodes"]
-        elif structure.get("title") or structure.get("text"):
-            items = [structure]
-
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        title = (item.get("title") or "").strip()
-        parent = fm if _is_front_matter_title(title) else section
-        ch = normalize_node(item, parent, counter)
-        if ch:
-            parent["nodes"].append(ch)
-
-    root["children"] = [c["node_id"] for c in root["nodes"]]
-    fm["children"] = [c["node_id"] for c in fm["nodes"]]
-    section["children"] = [c["node_id"] for c in section["nodes"]]
-    rebuild_paths(root)
-    return root
+    return _normalize_cloud(structure)
 
 
 def strip_legacy_fields(node: dict[str, Any]) -> dict[str, Any]:

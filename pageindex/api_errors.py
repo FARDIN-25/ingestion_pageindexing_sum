@@ -2,7 +2,14 @@
 
 
 def format_user_error(exc: Exception) -> str:
-    msg = str(exc)
+    if isinstance(exc, MemoryError):
+        return (
+            "Document too large to validate in memory (e.g. 1000+ pages). "
+            "Nodes are not saved. Try a smaller PDF, more RAM, or contact ops to raise limits."
+        )
+    msg = str(exc).strip()
+    if not msg:
+        msg = f"{type(exc).__name__}"
     low = msg.lower()
     if "limitreached" in low or "limit reached" in low:
         return (

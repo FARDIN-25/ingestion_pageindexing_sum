@@ -426,7 +426,6 @@ def _reorder_tables(conn) -> None:
                 path TEXT,
                 level INTEGER NOT NULL,
                 raw_content TEXT,
-                compressed_content TEXT,
                 micro_summary TEXT,
                 content_hash VARCHAR,
                 retrieval_ready BOOLEAN DEFAULT FALSE,
@@ -443,12 +442,12 @@ def _reorder_tables(conn) -> None:
             f"""
             INSERT INTO document_nodes_new (
                 seq_id, doc_id, file_name, id, node_id, parent_id, type, title, path, level,
-                raw_content, compressed_content, micro_summary, content_hash,
+                raw_content, micro_summary, content_hash,
                 retrieval_ready, is_front_matter, metadata_json, node_json, created_at
             )
             SELECT
                 {nodes_seq_col}, doc_id, file_name, id, node_id, parent_id, type, title, path, level,
-                raw_content, compressed_content, micro_summary, content_hash,
+                raw_content, micro_summary, content_hash,
                 retrieval_ready, is_front_matter, metadata_json, node_json, created_at
             FROM document_nodes
             """
@@ -558,6 +557,40 @@ def ensure_schema() -> None:
             conn.execute(
                 text(
                     "INSERT INTO app_migrations(key, value) VALUES('schema_sort_v3', 'done')"
+                )
+            )
+
+        already_v4 = conn.execute(
+            text("SELECT value FROM app_migrations WHERE key='drop_compressed_content_v4'")
+        ).fetchone()
+        if not already_v4 and _column_exists(conn, "document_nodes", "compressed_content"):
+            conn.execute(text("ALTER TABLE document_nodes DROP COLUMN compressed_content"))
+            conn.execute(
+                text(
+                    "INSERT INTO app_migrations(key, value) VALUES('drop_compressed_content_v4', 'done')"
+                )
+            )
+        elif not already_v4:
+            conn.execute(
+                text(
+                    "INSERT INTO app_migrations(key, value) VALUES('drop_compressed_content_v4', 'done')"
+                )
+            )
+
+        already_v5 = conn.execute(
+            text("SELECT value FROM app_migrations WHERE key='restore_compressed_content_v5'")
+        ).fetchone()
+        if not already_v5 and not _column_exists(conn, "document_nodes", "compressed_content"):
+            conn.execute(text("ALTER TABLE document_nodes ADD COLUMN compressed_content TEXT"))
+            conn.execute(
+                text(
+                    "INSERT INTO app_migrations(key, value) VALUES('restore_compressed_content_v5', 'done')"
+                )
+            )
+        elif not already_v5:
+            conn.execute(
+                text(
+                    "INSERT INTO app_migrations(key, value) VALUES('restore_compressed_content_v5', 'done')"
                 )
             )
 

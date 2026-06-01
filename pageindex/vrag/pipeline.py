@@ -118,13 +118,15 @@ class LexicalRetriever:
         self.docs: list[dict] = []
         all_tokens: list[list[str]] = []
         for n in self.nodes:
-            comp = _tokenize(n.get("compressed_content", ""))
             raw = _tokenize(n.get("raw_content", ""))
-            all_tokens.append(comp + raw)
+            compressed = _tokenize(n.get("compressed_content", ""))
+            micro = _tokenize(n.get("micro_summary", ""))
+            all_tokens.append(raw + compressed + micro)
             self.docs.append({
                 "node": n,
-                "comp_tokens": comp,
+                "micro_tokens": micro,
                 "raw_tokens": raw,
+                "compressed_tokens": compressed,
                 "title": (n.get("title") or "").lower(),
                 "aliases": [a.lower() for a in n.get("aliases") or []],
                 "synonyms": [s.lower() for s in n.get("synonyms") or []],
@@ -216,20 +218,26 @@ class LexicalRetriever:
                 score += 35.0
                 matched_keyword = k
 
-        # Stage 4: compressed FTS
-        comp_s = _bm25(q_tokens, d["comp_tokens"], self.avgdl, self.N, self.df)
+        # Stage 4: micro_summary FTS (metadata / filtering)
+        micro_s = _bm25(q_tokens, d["micro_tokens"], self.avgdl, self.N, self.df)
+        if micro_s > 0:
+            breakdown["micro_summary_fts"] = round(micro_s * 1.5, 3)
+            score += micro_s * 1.5
+            matched_content_type = "micro_summary"
+
+        # Stage 5: compressed_content FTS (retrieval-optimized)
+        comp_s = _bm25(q_tokens, d.get("compressed_tokens", []), self.avgdl, self.N, self.df)
         if comp_s > 0:
-            breakdown["compressed_fts"] = round(comp_s * 2.5, 3)
-            score += comp_s * 2.5
+            breakdown["compressed_fts"] = round(comp_s * 2.2, 3)
+            score += comp_s * 2.2
             matched_content_type = "compressed_content"
 
-        # Stage 5: raw FTS
+        # Stage 6: raw_content FTS (source of truth)
         raw_s = _bm25(q_tokens, d["raw_tokens"], self.avgdl, self.N, self.df)
         if raw_s > 0:
-            breakdown["raw_fts"] = round(raw_s, 3)
-            score += raw_s
-            if not matched_content_type:
-                matched_content_type = "raw_content"
+            breakdown["raw_fts"] = round(raw_s * 1.5, 3)
+            score += raw_s * 1.5
+            matched_content_type = "raw_content"
 
         return score, {
             "breakdown": breakdown,

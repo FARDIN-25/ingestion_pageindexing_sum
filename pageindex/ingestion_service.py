@@ -9,6 +9,7 @@ from pageindex.db.repository import IngestionRepository
 from pageindex.s3_reader import list_doc_ids, get_pdf_key, download_s3_to_tempfile
 from pageindex.env_settings import settings
 from pageindex.cloud import build_cloud_index
+from pageindex.job_results import slim_job_results
 from pageindex.usage.meter import UsageMeter
 
 class IngestionService:
@@ -75,18 +76,26 @@ class IngestionService:
             # Flatten nodes
             structure = result.get("structure_vrag") or result.get("structure")
             if structure:
-                tree_nodes = structure if isinstance(structure, list) else structure.get("nodes", [])
-                
-                flat_nodes = []
-                def flatten(nodes):
+                roots = structure if isinstance(structure, list) else [structure]
+
+                flat_nodes: list[dict] = []
+
+                def flatten(nodes: list[dict]) -> None:
                     for n in nodes:
-                        flat_nodes.append(n)
-                        flatten(n.get("nodes", []))
-                flatten(tree_nodes)
+                        if isinstance(n, dict):
+                            flat_nodes.append(n)
+                            flatten(n.get("nodes") or [])
+
+                flatten(roots)
                 
                 repo.replace_nodes(doc_id, flat_nodes)
                 
-            repo.upsert_job(doc_id, status="completed", results=result, file_name=file_name)
+            repo.upsert_job(
+                doc_id,
+                status="completed",
+                results=slim_job_results(result, job_doc_id=doc_id),
+                file_name=file_name,
+            )
             log_info("Doc %s successfully ingested.", doc_id)
 
         except Exception as e:
@@ -95,7 +104,8 @@ class IngestionService:
             log_exception("Error processing doc_id %s: %s", doc_id, e)
             db.rollback()  # Rollback any failed transactions so upsert_job doesn't fail with PendingRollbackError
             fn = locals().get("file_name")
-            repo.upsert_job(doc_id, status="failed", error_message=format_user_error(e)[:4000], file_name=fn)
+            err = format_user_error(e)[:4000]
+            repo.upsert_job(doc_id, status="failed", error_message=err, file_name=fn)
         finally:
             db.close()
             # Cleanup temp file

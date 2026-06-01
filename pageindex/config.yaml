@@ -19,6 +19,6 @@ overlap_reject_threshold: 0.85
 overlap_adjacent_threshold: 0.15
 fail_on_validation: "yes"
 run_retrieval_tests: "yes"
-max_chunk_chars: 6000
+max_chunk_chars: 4500
 max_title_chars: 85
 domain: "generic"

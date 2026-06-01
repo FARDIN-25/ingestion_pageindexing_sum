@@ -27,7 +27,7 @@ FIXTURE_QUERIES = ROOT / "tests" / "fixtures" / "retrieval_queries.json"
 
 def test_schema_types():
     assert "CONTENT" in NODE_TYPES
-    assert SCHEMA_VERSION == "2.3"
+    assert SCHEMA_VERSION == "2.4"
 
 
 def test_overlap_detection():
@@ -61,7 +61,7 @@ def test_paragraph_not_title():
 def test_full_build_passes_validation():
     opt = ConfigLoader().load({"pipeline": "vrag", "fail_on_validation": "yes"})
     result = build_index(str(PDF), opt=opt)
-    assert result["schema_version"] == "2.3"
+    assert result["schema_version"] == "2.4"
     assert result["retrieval_ready"] is True
     assert result["validation"]["valid"]
     assert result["retrieval_chunk_count"] > 20

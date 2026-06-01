@@ -4,10 +4,25 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .processing import compression_ratio
-from .schema import CONTAINER_TYPES, NODE_TYPES, RETRIEVAL_TYPES, VALID_PARENT, normalize_type
-from .processing import contains_garbage_artifact
-from .processing import is_paragraph_title, is_synthetic_title, jaccard_similarity, sha256_content
+from .schema import (
+    CONTAINER_TYPES,
+    FORBIDDEN_EXPORT_FIELDS,
+    NODE_TYPES,
+    RETRIEVAL_TYPES,
+    VALID_PARENT,
+    _split_micro_sentences,
+    normalize_type,
+)
+from .processing import (
+    compression_ratio,
+    contains_garbage_artifact,
+    is_legal_section_reference_title,
+    is_paragraph_title,
+    is_synthetic_title,
+    jaccard_similarity,
+    sha256_content,
+    token_set,
+)
 
 MULTI_TOPIC_PATTERNS = [
     re.compile(r"gstr[- ]?1\b", re.I),
@@ -19,6 +34,44 @@ MULTI_TOPIC_PATTERNS = [
 ]
 
 OVERLAP_DUPLICATE_THRESHOLD = 0.85
+# Full pairwise checks on 1000-page docs can exhaust RAM (O(n²) × large raw_content).
+MAX_GLOBAL_OVERLAP_NODES = 800
+OVERLAP_SAMPLE_CHARS = 2000
+MAX_GLOBAL_OVERLAP_ERRORS = 25
+
+
+def _global_overlap_duplicate_errors(retrieval_nodes: list[dict], threshold: float) -> list[str]:
+    """Near-duplicate detection using token samples (not full raw_content pairs)."""
+    if len(retrieval_nodes) <= 1:
+        return []
+    if len(retrieval_nodes) > MAX_GLOBAL_OVERLAP_NODES:
+        return []
+
+    samples: list[tuple[dict, set[str]]] = []
+    for node in retrieval_nodes:
+        raw = (node.get("raw_content") or "")[:OVERLAP_SAMPLE_CHARS]
+        if len(raw) < 40:
+            continue
+        toks = token_set(raw)
+        if toks:
+            samples.append((node, toks))
+
+    errors: list[str] = []
+    for i, (node_a, ta) in enumerate(samples):
+        ha = node_a.get("content_hash")
+        for node_b, tb in samples[i + 1 :]:
+            if ha and ha == node_b.get("content_hash"):
+                continue
+            union = len(ta | tb)
+            if union and len(ta & tb) / union >= threshold:
+                errors.append(
+                    f"Overlap duplicate:\n"
+                    f"Node A: {node_a.get('path')} [{node_a.get('node_id')}]\n"
+                    f"Node B: {node_b.get('path')} [{node_b.get('node_id')}]"
+                )
+                if len(errors) >= MAX_GLOBAL_OVERLAP_ERRORS:
+                    return errors
+    return errors
 
 
 class ValidationError(Exception):
@@ -59,7 +112,9 @@ def validate_index(
             n_path = n.get("path") or n.get("title") or "Unknown"
             n_id = n.get("node_id") or "?"
             n_type = normalize_type(n.get("type", ""))
-            return f"{msg}\nNode: {n_path} [{n_type}] ({n_id})"
+            ps = n.get("page_start") or 0
+            pe = n.get("page_end") or 0
+            return f"{msg} | node_id={n_id} | type={n_type} | pages={ps}-{pe} | path={n_path}"
 
         if ntype not in NODE_TYPES:
             errors.append(_err(f"Unknown type: {ntype}"))
@@ -82,6 +137,12 @@ def validate_index(
         if is_synthetic_title(title) and ntype in ("TOPIC", "SUBTOPIC", "CONTENT"):
             errors.append(_err(f"Synthetic title (not structural): {title[:60]}"))
 
+        if is_legal_section_reference_title(title) and ntype in ("TOPIC", "SUBTOPIC", "CONTENT"):
+            errors.append(_err(f"Legal section prose used as title: {title[:60]}"))
+
+        if ntype == "TABLE_OF_CONTENTS" and node.get("retrieval_ready"):
+            errors.append(_err("Table of contents must not be retrieval_ready"))
+
         if parent:
             ptype = normalize_type(parent.get("type", ""))
             allowed = VALID_PARENT.get(ptype, frozenset())
@@ -101,12 +162,13 @@ def validate_index(
 
         raw = (node.get("raw_content") or "").strip()
 
-        for leg in ("text", "summary", "prefix_summary"):
+        for leg in FORBIDDEN_EXPORT_FIELDS:
             if (node.get(leg) or "").strip():
-                if ntype in RETRIEVAL_TYPES and len(node.get(leg) or "") > 50:
-                    errors.append(
-                        _err(f"Legacy field '{leg}' present — use raw_content/compressed_content/micro_summary")
-                    )
+                errors.append(_err(f"Forbidden field '{leg}' must not be stored on nodes"))
+
+        for leg in ("text", "summary", "prefix_summary"):
+            if (node.get(leg) or "").strip() and ntype in RETRIEVAL_TYPES:
+                errors.append(_err(f"Legacy field '{leg}' present — use raw_content and micro_summary only"))
 
         if ntype in CONTAINER_TYPES:
             if len(raw) > 50:
@@ -114,10 +176,10 @@ def validate_index(
             if node.get("retrieval_ready") or node.get("is_retrieval_chunk"):
                 errors.append(_err(f"Container marked retrieval_ready"))
 
-        if ntype == "CONTENT" and raw:
+        if ntype == "CONTENT" and raw and not node.get("is_front_matter"):
             retrieval_nodes.append(node)
 
-        if ntype in RETRIEVAL_TYPES and raw:
+        if ntype in RETRIEVAL_TYPES and raw and not node.get("is_front_matter"):
             ps, pe = int(node.get("page_start") or 0), int(node.get("page_end") or 0)
             cs, ce = int(node.get("char_start") or 0), int(node.get("char_end") or 0)
             if pe > 0 and ps > pe:
@@ -125,22 +187,21 @@ def validate_index(
             if pe > 0 and ce > 0 and cs >= ce:
                 errors.append(_err(f"Invalid char range {cs}-{ce}"))
 
-            comp = (node.get("compressed_content") or "").strip()
-            if not comp:
-                errors.append(_err("Missing compressed_content"))
-            else:
-                if comp == raw:
-                    errors.append(_err("compressed_content must not be identical to raw_content"))
-                if len(raw) > 400:
-                    ratio = compression_ratio(raw, comp)
-                    if ratio < 0.60 or ratio > 0.80:
-                        errors.append(_err(f"Compression ratio {ratio:.2f} out of range (must be 60-80%)"))
-            
             micro = (node.get("micro_summary") or "").strip()
             if not micro:
                 errors.append(_err("Missing micro_summary"))
-            elif len(micro.splitlines()) > 4:
-                errors.append(_err("micro_summary must be <= 4 lines"))
+            elif len(_split_micro_sentences(micro)) > 3:
+                errors.append(_err("micro_summary must be <= 3 sentences"))
+            elif raw and micro.lower() not in raw.lower():
+                micro_tokens = {t for t in re.findall(r"[a-z0-9]{4,}", micro.lower())}
+                raw_tokens = set(re.findall(r"[a-z0-9]{4,}", raw.lower()[:4000]))
+                if micro_tokens and not micro_tokens & raw_tokens:
+                    errors.append(_err("micro_summary must be grounded in raw_content"))
+
+            if len(raw) < 20:
+                errors.append(_err("raw_content too short for retrieval node"))
+            if ps > 0 and pe > 0 and cs > 0 and ce > 0 and cs >= ce:
+                errors.append(_err(f"Invalid char range {cs}-{ce}"))
             
             ch = node.get("content_hash") or ""
             if ch != sha256_content(raw):
@@ -162,6 +223,21 @@ def validate_index(
                 errors.append(_err("Missing keywords"))
             if not node.get("synonyms"):
                 errors.append(_err("Missing synonyms"))
+
+            compressed = (node.get("compressed_content") or "").strip()
+            if not compressed:
+                errors.append(_err("Missing compressed_content"))
+            else:
+                ratio = compression_ratio(raw, compressed)
+                if len(raw) > 400:
+                    if ratio < 0.18:
+                        errors.append(_err(f"compressed_content too short ({ratio:.0%} of raw)"))
+                    elif ratio > 0.92:
+                        errors.append(_err(f"compressed_content not compressed ({ratio:.0%} of raw)"))
+                elif len(compressed) < 15:
+                    errors.append(_err("compressed_content too short for retrieval node"))
+                if contains_garbage_artifact(compressed):
+                    errors.append(_err("Garbage artifact in compressed_content"))
 
             if parent:
                 pr = (parent.get("raw_content") or "").strip()
@@ -210,16 +286,7 @@ def validate_index(
     if not retrieval_nodes:
         errors.append("No retrieval candidate nodes in index")
 
-    for i, a in enumerate(retrieval_nodes):
-        ra = a.get("raw_content") or ""
-        for b in retrieval_nodes[i + 1 :]:
-            rb = b.get("raw_content") or ""
-            if ra and rb and jaccard_similarity(ra, rb) >= OVERLAP_DUPLICATE_THRESHOLD:
-                errors.append(
-                    f"Overlap duplicate:\n"
-                    f"Node A: {a.get('path')} [{a.get('node_id')}]\n"
-                    f"Node B: {b.get('path')} [{b.get('node_id')}]"
-                )
+    errors.extend(_global_overlap_duplicate_errors(retrieval_nodes, OVERLAP_DUPLICATE_THRESHOLD))
 
     if strict and errors:
         raise ValidationError(errors)
@@ -229,7 +296,7 @@ def validate_index(
 import re
 from typing import Any
 
-from .schema import CONTAINER_TYPES, RETRIEVAL_TYPES, normalize_type
+from .schema import CONTAINER_TYPES, FRONT_MATTER_TYPES, RETRIEVAL_TYPES, normalize_type
 
 # Error substrings mapped to readiness gates
 _GATE_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -243,10 +310,15 @@ _GATE_PATTERNS: dict[str, tuple[str, ...]] = {
     "no_parser_artifacts": ("Garbage artifact", "physical_index"),
     "no_malformed_titles": ("Paragraph used as title", "Mega-title", "Synthetic title"),
     "lexical_metadata_complete": (
-        "Missing aliases", "Missing keywords", "Missing compressed", 
-        "Missing micro_summary", "content_hash mismatch", "Missing synonyms"
+        "Missing aliases", "Missing keywords",
+        "Missing micro_summary", "content_hash mismatch", "Missing synonyms",
+        "Forbidden field",
     ),
-    "chunk_validation": ("Multi-topic", "Compression ratio", "Empty raw_content"),
+    "compressed_content_valid": (
+        "Missing compressed_content", "compressed_content too short",
+        "compressed_content not compressed", "Garbage artifact in compressed",
+    ),
+    "chunk_validation": ("Multi-topic", "raw_content too short", "Empty raw_content", "micro_summary must be"),
     "no_overlap_adjacent": ("Adjacent overlap",),
 }
 
@@ -290,15 +362,50 @@ def apply_retrieval_readiness(
     ready_count = 0
     total_candidates = 0
 
+    def _node_passes(node: dict) -> bool:
+        raw = (node.get("raw_content") or "").strip()
+        if len(raw) < 20 or contains_garbage_artifact(raw):
+            return False
+        compressed = (node.get("compressed_content") or "").strip()
+        if not compressed or contains_garbage_artifact(compressed):
+            return False
+        if len(raw) > 400:
+            ratio = compression_ratio(raw, compressed)
+            if ratio < 0.18 or ratio > 0.92:
+                return False
+        if not (node.get("micro_summary") or "").strip():
+            return False
+        if not node.get("aliases") or not node.get("keywords") or not node.get("synonyms"):
+            return False
+        if is_paragraph_title(node.get("title", "")) or is_legal_section_reference_title(
+            node.get("title", "")
+        ):
+            return False
+        ch = node.get("content_hash") or ""
+        if ch != sha256_content(raw):
+            return False
+        if not (node.get("path") or "").strip() or not node.get("parent_id"):
+            return False
+        return True
+
     def walk(node: dict) -> None:
         nonlocal ready_count, total_candidates
         ntype = normalize_type(node.get("type", ""))
-        if ntype in RETRIEVAL_TYPES:
-            total_candidates += 1
-            node["retrieval_ready"] = all_pass
-            node["is_retrieval_chunk"] = all_pass
-            if all_pass:
-                ready_count += 1
+        if ntype in FRONT_MATTER_TYPES or ntype == "TABLE_OF_CONTENTS":
+            node["retrieval_ready"] = False
+            node["is_retrieval_chunk"] = False
+            node["is_front_matter"] = True
+        elif ntype in RETRIEVAL_TYPES:
+            if node.get("is_front_matter"):
+                node["retrieval_ready"] = False
+                node["is_retrieval_chunk"] = False
+            else:
+                total_candidates += 1
+                node_ready = all_pass and _node_passes(node)
+                node["retrieval_ready"] = node_ready
+                node["is_retrieval_chunk"] = node_ready
+                if node_ready:
+                    ready_count += 1
         elif ntype in CONTAINER_TYPES:
             node["retrieval_ready"] = False
             node["is_retrieval_chunk"] = False
@@ -307,8 +414,9 @@ def apply_retrieval_readiness(
 
     walk(root)
 
+    doc_ready = all_pass and total_candidates > 0 and ready_count == total_candidates
     return {
-        "retrieval_ready": all_pass and ready_count > 0,
+        "retrieval_ready": doc_ready,
         "ready_node_count": ready_count,
         "candidate_node_count": total_candidates,
         "gates": gates,

@@ -38,7 +38,9 @@ class IngestionRepository:
                 job.file_name = file_name
             if job.seq_id is None:
                 job.seq_id = (self.db.query(func.max(DocumentJob.seq_id)).scalar() or 0) + 1
-            if error_message is not None:
+            if status == "completed":
+                job.error_message = None
+            elif error_message is not None:
                 job.error_message = error_message
             if results is not None:
                 job.results = results
@@ -58,11 +60,15 @@ class IngestionRepository:
             id_map[old] = f"{i:04d}"
 
         for n in ordered:
+            raw = n.get("raw_content") or n.get("text") or ""
             metadata = {
                 "page_start": n.get("page_start") or n.get("page_index"),
                 "page_end": n.get("page_end"),
                 "char_start": n.get("char_start"),
                 "char_end": n.get("char_end"),
+                "token_count_raw": n.get("token_count_raw") or (len(raw.split()) if raw else 0),
+                "token_count_compressed": n.get("token_count_compressed")
+                or (len((n.get("compressed_content") or "").split()) if n.get("compressed_content") else 0),
                 "aliases": n.get("aliases"),
                 "keywords": n.get("keywords"),
                 "synonyms": n.get("synonyms"),

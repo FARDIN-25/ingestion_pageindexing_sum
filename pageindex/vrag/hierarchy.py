@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from pageindex.usage.meter import UsageMeter
 
 from .processing import semantic_chunks
-from .processing import compress_text
+from .processing import line_range_char_span
 from .schema import BuildConfig
 from .processing import ContentDeduplicator
 from .processing import DocLine
@@ -23,7 +23,8 @@ from .schema import (
 )
 from .processing import container_micro_summary, micro_summary_from_content
 from .path_utils import rebuild_paths
-from .processing import is_paragraph_title, is_synthetic_title
+from .postprocess import postprocess_vrag_tree
+from .processing import is_paragraph_title, is_structural_heading_line, is_synthetic_title
 
 ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10}
 
@@ -82,11 +83,15 @@ class HierarchyBuilder:
         root = empty_node("ROOT", "ROOT", "ROOT", LEVEL["ROOT"])
         root["node_id"] = _new_id("root", self._id)
 
-        fm = self._container("Front Matter", "FRONT_MATTER", "ROOT/FRONT_MATTER", root)
-        root["nodes"].append(fm)
+        document = self._container("Document", "DOCUMENT", "ROOT/DOCUMENT", root)
+        root["nodes"].append(document)
+
+        fm = self._container("Front Matter", "FRONT_MATTER", "ROOT/DOCUMENT/FRONT_MATTER", document)
+        document["nodes"].append(fm)
 
         section: dict | None = None
         unit: dict | None = None
+        chapter: dict | None = None
         fm_seen: set[str] = set()
 
         for i, h in enumerate(headings):
@@ -96,10 +101,33 @@ class HierarchyBuilder:
             meta = h.get("meta") or {}
             in_body = first_section is not None and i >= first_section
 
-            if ntype == "SECTION":
-                section = self._container(title, "SECTION", f"ROOT/SECTION/{title[:24]}", root)
-                root["nodes"].append(section)
+            if ntype == "CHAPTER":
+                chapter = self._container(
+                    title, "CHAPTER", f"{document['path']}/CHAPTER/{title[:40]}", document
+                )
+                document["nodes"].append(chapter)
+                section = None
                 unit = None
+                continue
+
+            if ntype == "SECTION":
+                sec_parent = chapter if chapter else document
+                section = self._container(
+                    title, "SECTION", f"{sec_parent['path']}/SECTION/{title[:24]}", sec_parent
+                )
+                sec_parent["nodes"].append(section)
+                unit = None
+                continue
+
+            if ntype == "TABLE_OF_CONTENTS":
+                toc = self._container(
+                    title, "TABLE_OF_CONTENTS", f"{fm['path']}/TOC", fm
+                )
+                fm["nodes"].append(toc)
+                self._attach_content_chunks(
+                    toc, "TABLE_OF_CONTENTS", f"{toc['path']}", doc_lines, start, end, title,
+                    front_matter=True,
+                )
                 continue
 
             if not in_body:
@@ -113,9 +141,18 @@ class HierarchyBuilder:
                 )
                 continue
 
+            if chapter is None and section is None:
+                chapter = self._container(
+                    "Main Body", "CHAPTER", f"{document['path']}/CHAPTER/MAIN", document
+                )
+                document["nodes"].append(chapter)
+
             if section is None:
-                section = self._container("SECTION MAIN", "SECTION", "ROOT/SECTION/MAIN", root)
-                root["nodes"].append(section)
+                sec_parent = chapter if chapter else document
+                section = self._container(
+                    "SECTION MAIN", "SECTION", f"{sec_parent['path']}/SECTION/MAIN", sec_parent
+                )
+                sec_parent["nodes"].append(section)
                 unit = None
 
             if ntype == "UNIT":
@@ -136,8 +173,7 @@ class HierarchyBuilder:
             )
 
         self._finalize_tree(root)
-        rebuild_paths(root)
-        finalize_children(root)
+        postprocess_vrag_tree(root, self.cfg)
         self.skipped_duplicates = (
             self.dedup.stats.rejected_exact
             + self.dedup.stats.rejected_overlap
@@ -259,20 +295,26 @@ class HierarchyBuilder:
                     sraw = sib.get("raw_content", "")
                     sec_key = re.match(r"^(\d+(?:\.\d+)*)", title.strip())
                     sib_sec = re.match(r"^(\d+(?:\.\d+)*)", sib.get("title", "").strip())
+                    if (
+                        title.strip().lower() != sib.get("title", "").strip().lower()
+                        and (
+                            is_structural_heading_line(title)
+                            or is_structural_heading_line(sib.get("title", ""))
+                        )
+                    ):
+                        continue
                     if sec_key and sib_sec and sec_key.group(1) == sib_sec.group(1):
                         from .processing import jaccard_similarity, sha256_content
                         if jaccard_similarity(sraw, raw) >= self.cfg.overlap_adjacent_threshold:
                             sib["raw_content"] = sraw + "\n" + raw
                             sib["content_hash"] = sha256_content(sib["raw_content"])
-                            sib["compressed_content"] = compress_text(
-                                sib["raw_content"],
-                                target_ratio=self.cfg.compression_target_ratio,
-                                min_ratio=self.cfg.compression_min_ratio,
-                            )
-                            sib["micro_summary"] = micro_summary_from_content(sib["title"], sib["compressed_content"])
+                            sib["micro_summary"] = micro_summary_from_content(sib["title"], sib["raw_content"])
                             pe_new = _page_range(doc_lines, s, e)[1]
                             sib["page_end"] = max(sib.get("page_end", 0), pe_new)
-                            sib["char_end"] = max(sib.get("char_end", 0), e)
+                            cs_m, ce_m = line_range_char_span(doc_lines, s, e)
+                            sib["char_start"] = min(sib.get("char_start", cs_m) or cs_m, cs_m)
+                            sib["char_end"] = max(sib.get("char_end", 0), ce_m)
+                            sib["token_count_raw"] = len(sib["raw_content"].split())
                             sibling_merged = True
                             break
             
@@ -290,25 +332,7 @@ class HierarchyBuilder:
             leaf["parent_id"] = attach_parent["node_id"]
             leaf["raw_content"] = raw
             leaf["content_hash"] = chash
-            import time as _time
-
-            t_comp = _time.perf_counter()
-            leaf["compressed_content"] = compress_text(
-                raw,
-                target_ratio=self.cfg.compression_target_ratio,
-                min_ratio=self.cfg.compression_min_ratio,
-            )
-            if self.meter:
-                from pageindex.usage.constants import Operation
-
-                self.meter.record_local_stage(
-                    Operation.COMPRESSION,
-                    page_start=ps,
-                    page_end=pe,
-                    text_sample=leaf["compressed_content"][:2000],
-                    latency_ms=int((_time.perf_counter() - t_comp) * 1000),
-                )
-            leaf["micro_summary"] = micro_summary_from_content(leaf["title"], leaf["compressed_content"])
+            leaf["micro_summary"] = micro_summary_from_content(leaf["title"], raw)
             if self.meter:
                 from pageindex.usage.constants import Operation
 
@@ -319,11 +343,12 @@ class HierarchyBuilder:
                     text_sample=leaf["micro_summary"],
                 )
             leaf["page_start"], leaf["page_end"] = _page_range(doc_lines, s, e)
-            leaf["char_start"], leaf["char_end"] = s, e
+            leaf["char_start"], leaf["char_end"] = line_range_char_span(doc_lines, s, e)
+            leaf["token_count_raw"] = len(raw.split())
             leaf["retrieval_ready"] = False
             leaf["is_retrieval_chunk"] = False
             leaf["is_front_matter"] = front_matter or attach_parent.get("type") == "FRONT_MATTER"
-            enrich_node(leaf)
+            enrich_node(leaf, self.cfg)
             if self.meter:
                 from pageindex.usage.constants import Operation
 
@@ -345,9 +370,11 @@ class HierarchyBuilder:
         if node.get("_meta") is not None:
             del node["_meta"]
         if node["type"] in CONTAINER_TYPES:
+            node.pop("compressed_content", None)
+            node.pop("token_count_compressed", None)
             node["raw_content"] = ""
-            node["compressed_content"] = ""
             node["content_hash"] = ""
+            node["token_count_raw"] = 0
             node["retrieval_ready"] = False
             node["is_retrieval_chunk"] = False
             titles = [c.get("title", "") for c in node.get("nodes") or []]

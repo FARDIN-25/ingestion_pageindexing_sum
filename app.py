@@ -350,7 +350,14 @@ async def process_upload(file: UploadFile = File(...)):
             doc_id = result.get("doc_id") or job_id
             db = SessionLocal()
             repo = IngestionRepository(db)
-            repo.upsert_job(doc_id, status="completed", results=result, file_name=safe_name)
+            from pageindex.job_results import slim_job_results
+
+            repo.upsert_job(
+                doc_id,
+                status="completed",
+                results=slim_job_results(result, job_doc_id=doc_id),
+                file_name=safe_name,
+            )
 
             structure = result.get("structure_vrag") or result.get("structure")
             if structure:
@@ -396,12 +403,23 @@ async def run_ingestion(background_tasks: BackgroundTasks):
 
 @app.get("/api/ingestion/jobs")
 async def list_jobs():
+    from sqlalchemy.orm import load_only
     from pageindex.db.database import SessionLocal
     from pageindex.db.models import DocumentJob
     db = SessionLocal()
     try:
         jobs = (
             db.query(DocumentJob)
+            .options(
+                load_only(
+                    DocumentJob.seq_id,
+                    DocumentJob.doc_id,
+                    DocumentJob.file_name,
+                    DocumentJob.status,
+                    DocumentJob.error_message,
+                    DocumentJob.created_at,
+                )
+            )
             .order_by(DocumentJob.seq_id.asc().nulls_last(), DocumentJob.created_at.asc())
             .limit(100)
             .all()
@@ -419,6 +437,43 @@ async def list_jobs():
                 for j in jobs
             ]
         }
+    finally:
+        db.close()
+
+
+@app.get("/api/ingestion/jobs/{doc_id}")
+async def get_job(doc_id: str, include_body: bool = True):
+    """
+    Full pipeline-style payload: structure, structure_vrag, validation, readiness.
+    Tree is rebuilt from document_nodes (same shape as POST /api/process).
+    """
+    from pageindex.db.database import SessionLocal
+    from pageindex.db.models import DocumentJob, DocumentNode
+    from pageindex.db.tree_builder import build_structure_vrag_root
+    from pageindex.job_results import merge_job_with_pipeline_result
+
+    db = SessionLocal()
+    try:
+        job = db.query(DocumentJob).filter(DocumentJob.doc_id == doc_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found.")
+
+        rows = (
+            db.query(DocumentNode)
+            .filter(DocumentNode.doc_id == doc_id)
+            .order_by(DocumentNode.seq_id.asc().nulls_last(), DocumentNode.node_id.asc())
+            .all()
+        )
+        structure_vrag = None
+        if rows:
+            structure_vrag = build_structure_vrag_root(rows, include_body=include_body)
+
+        return merge_job_with_pipeline_result(
+            job,
+            job.results if isinstance(job.results, dict) else None,
+            structure_vrag=structure_vrag,
+            structure_native=job.results.get("structure") if isinstance(job.results, dict) else None,
+        )
     finally:
         db.close()
 
@@ -459,10 +514,10 @@ async def list_all_nodes(limit: int = 500, offset: int = 0):
 
 
 @app.get("/api/ingestion/jobs/{doc_id}/tree")
-async def get_job_tree(doc_id: str):
+async def get_job_tree(doc_id: str, include_body: bool = False):
     from pageindex.db.database import SessionLocal
     from pageindex.db.models import DocumentNode
-    from pageindex.db.node_order import sort_tree_nodes
+    from pageindex.db.tree_builder import build_tree_from_nodes
 
     db = SessionLocal()
     try:
@@ -475,29 +530,7 @@ async def get_job_tree(doc_id: str):
         if not nodes:
             raise HTTPException(status_code=404, detail="Tree not found for this document.")
 
-        node_map = {}
-        for n in nodes:
-            node_map[n.node_id] = {
-                "seq_id": n.seq_id,
-                "node_id": n.node_id,
-                "parent_id": n.parent_id,
-                "type": n.type,
-                "title": n.title,
-                "level": n.level,
-                "retrieval_ready": n.retrieval_ready,
-                "micro_summary": n.micro_summary,
-                "nodes": [],
-            }
-
-        root_nodes = []
-        for n in nodes:
-            if n.parent_id and n.parent_id in node_map:
-                node_map[n.parent_id]["nodes"].append(node_map[n.node_id])
-            else:
-                root_nodes.append(node_map[n.node_id])
-
-        sort_tree_nodes(root_nodes)
-        return {"structure": root_nodes}
+        return {"structure": build_tree_from_nodes(nodes, include_body=include_body)}
     finally:
         db.close()
 

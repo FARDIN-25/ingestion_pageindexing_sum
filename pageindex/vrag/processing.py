@@ -60,18 +60,49 @@ def is_synthetic_title(text: str) -> bool:
     return False
 
 
+RE_LEGAL_SECTION_REF = re.compile(
+    r"^Section\s+\d{2,}[A-Z]{0,4}(?:\s+[A-Z]{1,3})?\s+(?:of\s+the\s+Act|under\s+the\s+Act)\b",
+    re.I,
+)
+RE_LEGAL_SECTION_LABEL = re.compile(r"^Section\s+\d{2,}[A-Z]{0,4}\s*:\s*", re.I)
+RE_LEGAL_SECTION_CHAIN = re.compile(r"\bor\s+section\s+\d", re.I)
+
+
+def is_legal_section_reference_title(text: str) -> bool:
+    """Tax/act prose citations masquerading as headings (e.g. 'Section 44A B of the Act.')."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if RE_LEGAL_SECTION_REF.match(t):
+        return True
+    if RE_LEGAL_SECTION_LABEL.match(t):
+        return True
+    if RE_LEGAL_SECTION_CHAIN.search(t):
+        return True
+    if re.match(r"^Section\s+\d{2,}[A-Z]{0,4}\b", t, re.I) and (
+        " of the " in t.lower() or t.rstrip().endswith(":") or len(t) > 45
+    ):
+        if not re.match(r"^Section\s+\d+\.\d+", t):
+            return True
+    return False
+
+
 def is_paragraph_title(text: str) -> bool:
     """True if text looks like body prose, not a structural heading."""
     t = (text or "").strip()
     if not t:
         return True
+    if is_legal_section_reference_title(t):
+        return True
     if is_synthetic_title(t):
         return True
-    if re.match(r"^(?:SECTION|UNIT)\s+", t, re.I):
+    if re.match(r"^(?:SECTION|UNIT|CHAPTER)\s+", t, re.I):
         return False
     if re.match(r"^\d+\.\d+(?:\.\d+)?\s+\S", t) and len(t) <= 90:
         return False
     if re.match(r"^(?:FORM\s+)?GST\s", t, re.I) and len(t) <= 80:
+        return False
+    if RE_BOOK_SECTION.match(t) and len(t) <= 90:
         return False
     if len(t) > 55:
         return True
@@ -80,6 +111,23 @@ def is_paragraph_title(text: str) -> bool:
     if t.count(".") >= 2 or t.count(",") >= 2:
         return True
     return False
+
+
+def is_table_of_contents_content(title: str, raw: str) -> bool:
+    """Detect TOC pages from title and dotted-leader line patterns."""
+    tl = (title or "").lower().strip()
+    if re.search(r"\b(table\s+of\s+contents|^\s*contents\s*$)\b", tl):
+        return True
+    lines = [ln.strip() for ln in (raw or "").split("\n") if ln.strip()][:50]
+    if len(lines) < 4:
+        return False
+    leader_hits = 0
+    for ln in lines:
+        if re.search(r"\.{3,}\s*\d{1,4}\s*$", ln):
+            leader_hits += 1
+        elif re.search(r"\s{2,}\d{1,3}\s*$", ln) and len(ln) < 120:
+            leader_hits += 1
+    return leader_hits >= max(3, int(len(lines) * 0.3))
 
 
 """Text sanitation: OCR cleanup, normalization, garbage removal."""
@@ -236,6 +284,12 @@ RE_GST_TOPIC = re.compile(
     re.I,
 )
 RE_LET_SUM = re.compile(r"^\d+\.\d+\s+(?:Let\s+us\s+sum\s+up|Let\s+Sum\s+Up|Test\s+Your\s+Knowledge)", re.I)
+RE_BOOK_SECTION = re.compile(
+    r"^(?:INTRODUCTION|BACKGROUND|DEFINITIONS?|PROVISIONS?|SUMMARY|CONCLUSION|"
+    r"APPENDIX|GLOSSARY|PREFACE|ACKNOWLEDGEMENTS?|TABLE\s+OF\s+CONTENTS|CONTENTS|INDEX|FOREWORD)\b",
+    re.I,
+)
+RE_CHAPTER = re.compile(r"^(?:CHAPTER|UNIT|PART)\s+([IVXLC\d]+)", re.I)
 
 FRONT_KW = (
     "preface", "course coordinator", "objectives", "syllabus",
@@ -264,7 +318,7 @@ def is_structural_heading_line(raw: str) -> bool:
     raw = raw.strip()
     if not raw or len(raw) > 100:
         return False
-    if is_paragraph_title(raw):
+    if is_paragraph_title(raw) or is_legal_section_reference_title(raw):
         return False
     if RE_SUBTOPIC.match(raw) or RE_TOPIC.match(raw):
         return True
@@ -280,7 +334,23 @@ def is_structural_heading_line(raw: str) -> bool:
         return True
     if RE_SYLLABUS.match(raw):
         return True
+    if RE_BOOK_SECTION.match(raw) and len(raw) < 90:
+        return True
+    if RE_CHAPTER.match(raw):
+        return True
     return False
+
+
+def is_valid_heading_title(text: str) -> bool:
+    """Structural heading suitable for node title."""
+    t = (text or "").strip()
+    if not t or len(t) > 100:
+        return False
+    if is_paragraph_title(t) or is_legal_section_reference_title(t):
+        return False
+    return is_structural_heading_line(t) or (
+        RE_BOOK_SECTION.match(t) and len(t) <= 90
+    )
 
 
 def classify_heading(
@@ -322,6 +392,10 @@ def classify_heading(
             return None
         return ("UNIT", title, LEVEL["UNIT"], {"unit": m.group(1).upper()})
 
+    m = RE_CHAPTER.match(raw)
+    if m:
+        return ("CHAPTER", title, LEVEL.get("CHAPTER", 2), {"chapter": m.group(1).upper()})
+
     if RE_STRUCTURE.match(raw):
         return None
 
@@ -335,6 +409,22 @@ def classify_heading(
         return ("COURSE_INFO", title, LEVEL["COURSE_INFO"], {})
     if RE_SYLLABUS.match(raw):
         return ("SYLLABUS", title, LEVEL["SYLLABUS"], {})
+
+    if RE_BOOK_SECTION.match(raw):
+        low = raw.lower()
+        if "contents" in low or "table of" in low:
+            return ("TABLE_OF_CONTENTS", title, LEVEL.get("TABLE_OF_CONTENTS", 3), {})
+        if any(k in low for k in ("preface", "foreword", "acknowledg")):
+            return ("PREFACE", title, LEVEL["PREFACE"], {})
+        if "glossary" in low or "index" in low:
+            return ("REFERENCES", title, LEVEL["REFERENCES"], {})
+        if "introduction" in low or "background" in low or "definition" in low:
+            return ("TOPIC", title, LEVEL["TOPIC"], {"section": "intro"})
+        return ("TOPIC", title, LEVEL["TOPIC"], {})
+
+    if RE_CHAPTER.match(raw):
+        m = RE_CHAPTER.match(raw)
+        return ("UNIT", title, LEVEL["UNIT"], {"unit": m.group(1).upper()})
 
     if body_started and (RE_GST_FORM.match(raw) or RE_GST_TOPIC.match(raw) or RE_LET_SUM.match(raw)):
         return ("TOPIC", title, LEVEL["TOPIC"], {})
@@ -399,6 +489,33 @@ class DocLine:
     text: str
     font_size: float = 0.0
     is_bold: bool = False
+    char_start: int = 0
+    char_end: int = 0
+
+
+def build_line_char_offsets(doc_lines: list[DocLine]) -> list[int]:
+    """Character offset at the start of each line in joined document text."""
+    offsets: list[int] = []
+    pos = 0
+    for i, ln in enumerate(doc_lines):
+        ln.char_start = pos
+        offsets.append(pos)
+        pos += len(ln.text)
+        ln.char_end = pos
+        if i < len(doc_lines) - 1:
+            pos += 1
+    return offsets
+
+
+def line_range_char_span(doc_lines: list[DocLine], start: int, end: int) -> tuple[int, int]:
+    """Map exclusive line range [start, end) to [char_start, char_end) in document text."""
+    if not doc_lines or start >= end or start >= len(doc_lines):
+        return (0, 0)
+    end = min(end, len(doc_lines))
+    cs = doc_lines[start].char_start
+    last = doc_lines[end - 1]
+    ce = last.char_end
+    return (cs, ce)
 
 
 def extract_document(pdf_path: str) -> tuple[str, list[DocLine], list[tuple[int, str]]]:
@@ -434,6 +551,7 @@ def extract_document(pdf_path: str) -> tuple[str, list[DocLine], list[tuple[int,
         pages.append((pnum, "\n".join(page_lines)))
 
     doc.close()
+    build_line_char_offsets(lines)
     return "\n".join(parts), lines, pages
 
 
@@ -457,6 +575,7 @@ FORM_LINE = re.compile(
     re.I,
 )
 CONCEPT_MARKERS = [
+    RE_BOOK_SECTION,
     re.compile(r"^\d+\.\d+(?:\.\d+)?\s+(?:FORM\s+)?(?:GST|GSTR)", re.I),
     re.compile(r"^\d+\.\d+\s+GSTR", re.I),
     re.compile(r"^\d+\.\d+\s+(?:Let\s+us\s+sum\s+up|Let\s+Sum\s+Up|Test\s+Your)", re.I),
@@ -577,8 +696,13 @@ def _filter_adjacent_overlap(
         prev_title, prev_raw, prev_s, prev_e = out[-1]
         curr_title, curr_raw, curr_s, curr_e = item
         
+        if (
+            prev_title.strip().lower() != curr_title.strip().lower()
+            and (is_structural_heading_line(curr_title) or is_structural_heading_line(prev_title))
+        ):
+            out.append(item)
+            continue
         if jaccard_similarity(prev_raw, curr_raw) >= threshold:
-            # Rebuild chunk boundaries by merging them into one concept
             merged_raw = prev_raw + "\n" + curr_raw
             merged_e = max(prev_e, curr_e)
             out[-1] = (prev_title, merged_raw, prev_s, merged_e)
@@ -760,6 +884,8 @@ def compress_text(raw: str, target_ratio: float = 0.70, min_ratio: float = 0.60)
     if total < min_len:
         for s in scored:
             if s not in kept:
+                if total + len(s) > int(len(raw) * 0.85) and kept:
+                    break
                 kept.append(s)
                 total += len(s) + 1
                 if total >= min_len:
@@ -768,42 +894,69 @@ def compress_text(raw: str, target_ratio: float = 0.70, min_ratio: float = 0.60)
     order = {id(s): i for i, s in enumerate(unique)}
     kept.sort(key=lambda s: order.get(id(s), 999))
 
-    return "\n".join(kept).strip() if kept else raw.strip()
+    result = "\n".join(kept).strip() if kept else raw.strip()
+    if len(raw) > 400 and len(result) / len(raw) > 0.92:
+        capped: list[str] = []
+        total = 0
+        for s in unique:
+            if total + len(s) > target_len and total >= min_len:
+                break
+            capped.append(s)
+            total += len(s) + 1
+        if capped:
+            result = "\n".join(capped).strip()
+        if len(result) / len(raw) > 0.92 and unique:
+            words = unique[0].split()
+            budget = max(int(len(raw) * target_ratio), min_len)
+            trimmed: list[str] = []
+            wlen = 0
+            for w in words:
+                if wlen + len(w) + 1 > budget and trimmed:
+                    break
+                trimmed.append(w)
+                wlen += len(w) + 1
+            if trimmed:
+                result = " ".join(trimmed)
+    return result
 
 
-"""Micro-summary generation (2–4 lines, routing only)."""
-
-import re
+"""Micro-summary generation (1–3 sentences, metadata only)."""
 
 
-def micro_summary_from_content(title: str, compressed: str, max_lines: int = 4) -> str:
-    """Deterministic routing summary — not detailed content."""
-    if not compressed:
+def micro_summary_from_content(title: str, raw: str, max_sentences: int = 3) -> str:
+    """Deterministic metadata summary (1–3 sentences) from raw_content only."""
+    raw = (raw or "").strip()
+    if not raw:
         return f"Section: {title}."
 
-    lines = []
-    # Title context
+    picked: list[str] = []
     t = title.strip()
     if re.match(r"^\d+\.\d+", t):
-        lines.append(f"Covers {t}.")
+        picked.append(f"Covers {t}.")
 
-    # First informative sentences from compressed
-    sents = re.split(r"(?<=[.!?])\s+", compressed)
-    sents = [s.strip() for s in sents if s.strip() and len(s.strip()) > 20]
-
-    for s in sents[:3]:
-        if any(k in s.lower() for k in ("gst", "gstr", "form", "registration", "return", "portal", "tax", "filing")):
-            lines.append(s if len(s) < 200 else s[:200] + "...")
-        if len(lines) >= max_lines:
+    sents = _split_sentences(raw)
+    for s in sents:
+        if len(s) < 20:
+            continue
+        if any(
+            k in s.lower()
+            for k in ("gst", "gstr", "form", "registration", "return", "portal", "tax", "filing", "rule", "act")
+        ):
+            picked.append(s if len(s) <= 220 else s[:217] + "...")
+        if len(picked) >= max_sentences:
             break
 
-    if len(lines) < 2 and sents:
-        lines.append(sents[0][:180] + ("..." if len(sents[0]) > 180 else ""))
+    if len(picked) < max_sentences:
+        for s in sents:
+            if s not in picked:
+                picked.append(s if len(s) <= 220 else s[:217] + "...")
+            if len(picked) >= max_sentences:
+                break
 
-    text = " ".join(lines[:max_lines])
-    # Cap to ~4 lines
-    parts = text.split(". ")
-    return ". ".join(parts[:4]).strip() + ("." if parts and not text.endswith(".") else "")
+    if not picked:
+        picked.append(f"Section: {title}.")
+
+    return " ".join(picked[:max_sentences]).strip()
 
 
 def container_micro_summary(title: str, child_titles: list[str]) -> str:

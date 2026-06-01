@@ -310,6 +310,11 @@ def build_cloud_index(
 
     raw_structure = doc.get("result") or []
     root = normalize_cloud_structure(raw_structure)
+    from pageindex.vrag.postprocess import postprocess_vrag_tree
+
+    from pageindex.vrag.schema import BuildConfig
+
+    postprocess_vrag_tree(root, BuildConfig())
 
     meta: dict[str, Any] = {}
     try:
@@ -324,6 +329,12 @@ def build_cloud_index(
     errors: list[str] = []
     try:
         errors = validate_index(root, strict=False, overlap_adjacent_threshold=0.15)
+    except MemoryError:
+        errors = [
+            "Document too large for in-memory overlap validation; "
+            "index built but overlap scan was skipped."
+        ]
+        log_info("[cloud] validate_index skipped: MemoryError on large document")
     except ValidationError as e:
         errors = e.errors
 
@@ -343,15 +354,13 @@ def build_cloud_index(
         retrieval_tests_passed=None,
         require_tests=False,
     )
+    readiness["hierarchy_warning_count"] = len(hierarchy_errors)
+    readiness["content_warning_count"] = len(content_errors)
     if hierarchy_errors:
         readiness["cloud_hierarchy_warnings"] = hierarchy_errors[:10]
+        readiness["gates"]["hierarchy_valid"] = False
     if content_errors:
         readiness["cloud_content_warnings"] = content_errors[:20]
-
-    api_ready = doc.get("retrieval_ready")
-    if api_ready is True:
-        readiness["retrieval_ready"] = True
-        readiness["gates"]["api_retrieval_ready"] = True
 
     if fail_on_validation and content_errors:
         log_info("[cloud] content warnings (%d), not blocking upload", len(content_errors))
@@ -365,7 +374,7 @@ def build_cloud_index(
     log_info("[cloud] Step 3/3: doc_id=%s retrieval_ready=%s", doc_id, readiness["retrieval_ready"])
     return {
         "pipeline": "pageindex",
-        "schema_version": "2.3",
+        "schema_version": "2.4",
         "source_pdf": path.name,
         "doc_id": doc_id,
         "document_id": doc_id,
@@ -380,9 +389,11 @@ def build_cloud_index(
         "structure_vrag": export_node(root),
         "usage": usage_report,
         "validation": {
-            "valid": readiness["retrieval_ready"],
-            "error_count": len(content_errors),
-            "errors": content_errors[:30],
+            "valid": readiness["retrieval_ready"] and not hierarchy_errors,
+            "hierarchy_valid": not hierarchy_errors,
+            "content_valid": len(content_errors) == 0,
+            "error_count": len(content_errors) + len(hierarchy_errors),
+            "errors": (hierarchy_errors + content_errors)[:30],
             "warnings": hierarchy_errors[:10],
             "chunk_count": readiness["ready_node_count"],
         },

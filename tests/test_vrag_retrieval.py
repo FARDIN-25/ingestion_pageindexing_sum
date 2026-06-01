@@ -38,9 +38,10 @@ def test_build_schema_and_validation():
     for leaf in result["flat_nodes"]:
         assert leaf.get("raw_content")
         assert leaf.get("compressed_content")
+        assert leaf.get("token_count_compressed", 0) >= 0
         assert leaf.get("micro_summary")
         assert leaf.get("content_hash")
-        assert leaf["token_count_raw"] >= leaf["token_count_compressed"] or leaf["token_count_compressed"] > 0
+        assert leaf["token_count_raw"] > 0
         assert "detected as" not in (leaf.get("title") or "").lower()
 
 

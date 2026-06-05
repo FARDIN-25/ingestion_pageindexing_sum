@@ -27,7 +27,7 @@ FIXTURE_QUERIES = ROOT / "tests" / "fixtures" / "retrieval_queries.json"
 
 def test_schema_types():
     assert "CONTENT" in NODE_TYPES
-    assert SCHEMA_VERSION == "2.4"
+    assert SCHEMA_VERSION == "2.5"
 
 
 def test_overlap_detection():
@@ -61,13 +61,16 @@ def test_paragraph_not_title():
 def test_full_build_passes_validation():
     opt = ConfigLoader().load({"pipeline": "vrag", "fail_on_validation": "yes"})
     result = build_index(str(PDF), opt=opt)
-    assert result["schema_version"] == "2.4"
+    assert result["schema_version"] == "2.5"
     assert result["retrieval_ready"] is True
     assert result["validation"]["valid"]
     assert result["retrieval_chunk_count"] > 20
     root = result["structure"]
     assert root["type"] == "ROOT"
-    assert any(c["type"] == "FRONT_MATTER" for c in root.get("nodes", []))
+    nodes = root.get("nodes", [])
+    if any(c["type"] == "DOCUMENT" for c in nodes):
+        nodes = [child for doc in nodes for child in doc.get("nodes", [])]
+    assert any(c["type"] == "FRONT_MATTER" for c in nodes)
 
 
 @pytest.mark.skipif(not PDF.exists(), reason="Sample PDF missing")

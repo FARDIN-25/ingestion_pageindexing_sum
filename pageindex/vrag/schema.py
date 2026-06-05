@@ -46,7 +46,7 @@ class BuildConfig:
 
 from typing import Any
 
-SCHEMA_VERSION = "2.4"
+SCHEMA_VERSION = "2.5"
 
 
 NODE_TYPES = frozenset({
@@ -82,7 +82,7 @@ VALID_PARENT: dict[str, frozenset[str]] = {
         "TABLE_OF_CONTENTS", "PREFACE", "COURSE_INFO", "OBJECTIVES",
         "SYLLABUS", "REFERENCES", "CONTENT",
     }),
-    "CHAPTER": frozenset({"SECTION", "UNIT", "TOPIC", "SUBTOPIC", "CONTENT"}),
+    "CHAPTER": frozenset({"SECTION", "UNIT", "TOPIC", "SUBTOPIC", "CONTENT", "CHAPTER", "APPENDIX"}),
     "APPENDIX": frozenset({"SECTION", "TOPIC", "SUBTOPIC", "CONTENT"}),
     "SECTION": frozenset({"UNIT", "TOPIC", "SUBTOPIC", "CONTENT"}),
     "UNIT": frozenset({"TOPIC", "SUBTOPIC", "CONTENT"}),
@@ -118,7 +118,9 @@ FORBIDDEN_EXPORT_FIELDS = frozenset({
 
 
 def _split_micro_sentences(text: str) -> list[str]:
-    return [s for s in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if s.strip()]
+    normalized_text = re.sub(r"\s+", " ", text or "")
+    parts = re.split(r"(?<=[.!?])\s+", normalized_text)
+    return [p.strip() for p in parts if p.strip()]
 
 
 def normalize_type(node_type: str) -> str:
@@ -319,6 +321,91 @@ def _extract_synonyms(aliases: list[str], title: str) -> list[str]:
     return syn[:18]
 
 
+def clean_ocr_artifacts(text: str) -> str:
+    if not text:
+        return text
+    # "Section 44A B" -> "Section 44AB"
+    text = re.sub(r'Section\s+(\d+[A-Z])\s+([A-Z])\b', r'Section \1\2', text)
+    # "Section 269t h" -> "Section 269th"
+    text = re.sub(r'Section\s+(\d+[a-z])\s+([a-z])\b', r'Section \1\2', text)
+    # "XVII -B" -> "XVII-B"
+    text = re.sub(r'([A-Z]{2,})\s+(-)\s+([A-Z])', r'\1-\3', text)
+    return text
+
+
+def validate_and_correct_compressed(compressed: str, raw: str, min_len: int = 100) -> str:
+    if not compressed:
+        return ""
+    comp = compressed.strip()
+    
+    # 1. Must not end with "##", "-", ":", or partial list item
+    while True:
+        last_comp = comp
+        comp = re.sub(r'[\s\-:#]+$', '', comp)
+        comp = re.sub(r'\b[a-zA-Z0-9]\.$', '', comp)
+        if comp == last_comp:
+            break
+            
+    comp = comp.strip()
+    
+    # 2. Must end with a complete sentence (ends with ".", "?", "!")
+    if comp and comp[-1] not in ('.', '?', '!'):
+        m = list(re.finditer(r'[.!?]\s', comp))
+        if m:
+            last_boundary = m[-1].end()
+            comp = comp[:last_boundary].strip()
+        else:
+            comp = comp + "."
+                 
+    # 3. Minimum compressed_content length: 100 chars for CONTENT nodes
+    if len(comp) < min_len and len(raw) >= min_len:
+        raw_sents = _split_micro_sentences(raw)
+        comp_sents = _split_micro_sentences(comp)
+        max_budget = int(len(raw) * 0.88) if len(raw) > 400 else len(raw)
+        for s in raw_sents:
+            s_clean = re.sub(r'[^a-zA-Z0-9]', '', s).lower()
+            already_exists = False
+            for cs in comp_sents:
+                cs_clean = re.sub(r'[^a-zA-Z0-9]', '', cs).lower()
+                if s_clean == cs_clean:
+                    already_exists = True
+                    break
+                if len(s_clean) > 10 and len(cs_clean) > 10:
+                    if s_clean in cs_clean or cs_clean in s_clean:
+                        already_exists = True
+                        break
+            if not already_exists:
+                current_len = len("\n".join(comp_sents))
+                if current_len + len(s) + 1 <= max_budget:
+                    comp_sents.append(s)
+                    comp = "\n".join(comp_sents)
+                    if len(comp) >= min_len:
+                        break
+                else:
+                    rem_budget = max_budget - current_len - 1
+                    if rem_budget >= 15:
+                        words = s.split()
+                        trimmed = []
+                        wlen = 0
+                        for w in words:
+                            if wlen + len(w) + 2 > rem_budget and trimmed:
+                                break
+                            trimmed.append(w)
+                            wlen += len(w) + 1
+                        if trimmed:
+                            truncated_s = " ".join(trimmed).strip()
+                            if truncated_s and truncated_s[-1] not in ('.', '?', '!'):
+                                truncated_s = truncated_s.rstrip(' .!?') + "."
+                            comp_sents.append(truncated_s)
+                    comp = "\n".join(comp_sents)
+                    break
+                    
+    if len(comp) < 15 and len(raw) >= 15:
+        comp = raw.strip()
+        
+    return comp
+
+
 def enrich_node(node: dict, cfg: BuildConfig | None = None) -> None:
     raw = node.get("raw_content") or ""
     if not raw:
@@ -337,15 +424,25 @@ def enrich_node(node: dict, cfg: BuildConfig | None = None) -> None:
             target_ratio=max(0.60, build_cfg.compression_min_ratio),
             min_ratio=build_cfg.compression_min_ratio,
         )
-    node["compressed_content"] = compressed
+    
+    # Validate and correct compressed output
+    corrected_compressed = validate_and_correct_compressed(compressed, raw, min_len=100)
+    node["compressed_content"] = corrected_compressed
     node["content_hash"] = content_hash(raw)
     node["token_count_raw"] = token_count(raw)
-    node["token_count_compressed"] = token_count(compressed)
+    node["token_count_compressed"] = token_count(corrected_compressed)
+    
+    # Lexical enrichment
     aliases = extract_aliases(node.get("title", ""), raw)
-    node["aliases"] = aliases
-    node["keywords"] = extract_keywords(node.get("title", ""), raw)
+    keywords = extract_keywords(node.get("title", ""), raw)
     syns = _extract_synonyms(aliases, node.get("title", ""))
-    node["synonyms"] = syns if syns else list(aliases[:8])
+    if not syns:
+        syns = list(aliases[:8])
+        
+    # Clean OCR artifacts
+    node["aliases"] = [clean_ocr_artifacts(a) for a in aliases]
+    node["keywords"] = [clean_ocr_artifacts(k) for k in keywords]
+    node["synonyms"] = [clean_ocr_artifacts(s) for s in syns]
 
 
 import re

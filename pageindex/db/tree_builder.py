@@ -35,8 +35,12 @@ def _node_payload(row: DocumentNode, *, include_body: bool = True) -> dict[str, 
     }
     if include_body:
         payload["raw_content"] = row.raw_content or ""
+        payload["compressed_content"] = row.compressed_content or ""
         payload["token_count_raw"] = int(
             meta.get("token_count_raw") or len((row.raw_content or "").split())
+        )
+        payload["token_count_compressed"] = int(
+            meta.get("token_count_compressed") or len((row.compressed_content or "").split())
         )
     return payload
 

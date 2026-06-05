@@ -19,7 +19,7 @@ def test_memory_error_message_not_empty():
 def test_slim_job_results_keeps_small_structure():
     big = {
         "pipeline": "pageindex",
-        "schema_version": "2.4",
+        "schema_version": "2.5",
         "doc_id": "abc123",
         "structure": {"type": "ROOT", "nodes": []},
         "structure_vrag": {"type": "ROOT", "nodes": [{"node_id": "0001"}]},

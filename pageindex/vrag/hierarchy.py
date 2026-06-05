@@ -12,7 +12,7 @@ from .processing import line_range_char_span
 from .schema import BuildConfig
 from .processing import ContentDeduplicator
 from .processing import DocLine
-from .processing import clean_title, detect_headings
+from .processing import clean_title, detect_headings, is_table_of_contents_content, detect_toc_pages
 from .schema import enrich_node
 from .schema import (
     CONTAINER_TYPES,
@@ -73,12 +73,13 @@ class HierarchyBuilder:
         self.meter = meter
 
     def build(self, doc_lines: list[DocLine]) -> dict[str, Any]:
+        self.toc_pages = detect_toc_pages(doc_lines)
         headings = detect_headings(doc_lines)
         if not headings:
             headings = [{"line_idx": 0, "type": "PREFACE", "title": "Document", "level": 2, "meta": {}}]
 
         ends = [headings[i + 1]["line_idx"] for i in range(len(headings) - 1)] + [len(doc_lines)]
-        first_section = next((i for i, h in enumerate(headings) if h["type"] == "SECTION"), None)
+        first_section = next((i for i, h in enumerate(headings) if h["type"] in ("SECTION", "CHAPTER", "APPENDIX", "UNIT")), None)
 
         root = empty_node("ROOT", "ROOT", "ROOT", LEVEL["ROOT"])
         root["node_id"] = _new_id("root", self._id)
@@ -124,10 +125,6 @@ class HierarchyBuilder:
                     title, "TABLE_OF_CONTENTS", f"{fm['path']}/TOC", fm
                 )
                 fm["nodes"].append(toc)
-                self._attach_content_chunks(
-                    toc, "TABLE_OF_CONTENTS", f"{toc['path']}", doc_lines, start, end, title,
-                    front_matter=True,
-                )
                 continue
 
             if not in_body:
@@ -228,11 +225,16 @@ class HierarchyBuilder:
             max_chars=self.cfg.max_chunk_chars,
             overlap_adjacent_threshold=self.cfg.overlap_adjacent_threshold,
         ):
+            chunk_page = doc_lines[s].page if s < len(doc_lines) else 0
+            if chunk_page in getattr(self, "toc_pages", set()):
+                continue
+            if is_table_of_contents_content(title, raw):
+                continue
             if is_synthetic_title(title) and not re.match(r"^\d+\.\d+", title):
                 continue
             if is_paragraph_title(title) and not re.match(r"^\d+\.\d+", title):
                 continue
-            if re.match(r"^[\d.,\s]+$", title) or len(re.findall(r"[A-Za-z]", title)) < 4:
+            if (re.match(r"^[\d.,\s]+$", title) or len(re.findall(r"[A-Za-z]", title)) < 3) and not re.match(r"^\d+\.\d+", title):
                 continue
 
             accepted, chash = self.dedup.register(raw)

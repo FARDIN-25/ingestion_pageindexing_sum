@@ -435,3 +435,224 @@ def clear_retrieval_ready(root: dict[str, Any]) -> None:
             walk(c)
 
     walk(root)
+
+
+def deduplicate_node_ids(root: dict, repair_log: list[str] | None = None) -> None:
+    seen_ids = set()
+    id_map = {} # maps object reference id(node) -> new_id
+    
+    def first_pass(node):
+        nid = node.get("node_id")
+        if nid:
+            if nid in seen_ids:
+                base = nid
+                suffix = "a"
+                m = re.match(r"^(.*)_([a-z0-9]+)$", nid)
+                if m:
+                    base = m.group(1)
+                    suffix = m.group(2)
+                    if len(suffix) == 1 and 'a' <= suffix <= 'y':
+                        suffix = chr(ord(suffix) + 1)
+                    else:
+                        suffix = "a"
+                
+                new_id = f"{base}_{suffix}"
+                while new_id in seen_ids:
+                    if len(suffix) == 1 and 'a' <= suffix <= 'y':
+                        suffix = chr(ord(suffix) + 1)
+                    else:
+                        suffix = suffix + "a"
+                    new_id = f"{base}_{suffix}"
+                
+                id_map[id(node)] = new_id
+                seen_ids.add(new_id)
+                msg = f"Duplicate node_id '{nid}' detected. Suffix appended: '{new_id}'."
+                if repair_log is not None:
+                    repair_log.append(msg)
+            else:
+                seen_ids.add(nid)
+                
+        for ch in node.get("nodes") or []:
+            first_pass(ch)
+            
+    first_pass(root)
+    
+    def second_pass(node):
+        if id(node) in id_map:
+            node["node_id"] = id_map[id(node)]
+            
+        children = node.get("nodes") or []
+        for ch in children:
+            second_pass(ch)
+            
+        cids = [c["node_id"] for c in children if c.get("node_id")]
+        node["children"] = cids
+        node["children_ids"] = cids
+        
+    second_pass(root)
+    
+    def third_pass(node, parent_id=None):
+        node["parent_id"] = parent_id
+        for ch in node.get("nodes") or []:
+            third_pass(ch, node.get("node_id"))
+            
+    third_pass(root, None)
+
+
+def reparent_node(node: dict, new_parent: dict, node_index: dict[str, dict], repair_log: list[str] | None = None) -> None:
+    # Support both dictionary and class object nodes seamlessly
+    def get_val(obj, key, default=None):
+        if hasattr(obj, key):
+            return getattr(obj, key)
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return default
+
+    def set_val(obj, key, val):
+        if hasattr(obj, key):
+            setattr(obj, key, val)
+        elif isinstance(obj, dict):
+            obj[key] = val
+
+    old_pid = get_val(node, "parent_id")
+    new_pid = get_val(new_parent, "node_id") if new_parent else None
+    
+    if old_pid == new_pid:
+        return
+        
+    set_val(node, "parent_id", new_pid)
+    
+    # Log to repair_log
+    msg = f"Reparented node {get_val(node, 'node_id')} ({get_val(node, 'type')}) from parent {old_pid} to nearest valid parent {new_pid} ({get_val(new_parent, 'type') if new_parent else 'None'})"
+    if repair_log is not None:
+        repair_log.append(msg)
+        
+    # Update children list in old parent
+    if old_pid:
+        old_parent = node_index.get(old_pid)
+        if old_parent:
+            for c_key in ("children", "children_ids"):
+                c_list = get_val(old_parent, c_key)
+                if isinstance(c_list, list) and get_val(node, "node_id") in c_list:
+                    c_list.remove(get_val(node, "node_id"))
+            nodes_list = get_val(old_parent, "nodes")
+            if isinstance(nodes_list, list):
+                for child in list(nodes_list):
+                    if get_val(child, "node_id") == get_val(node, "node_id"):
+                        nodes_list.remove(child)
+                        
+    # Update children list in new parent
+    if new_parent:
+        for c_key in ("children", "children_ids"):
+            c_list = get_val(new_parent, c_key)
+            if isinstance(c_list, list):
+                if get_val(node, "node_id") not in c_list:
+                    c_list.append(get_val(node, "node_id"))
+            else:
+                set_val(new_parent, c_key, [get_val(node, "node_id")])
+        
+        nodes_list = get_val(new_parent, "nodes")
+        if isinstance(nodes_list, list):
+            if not any(get_val(child, "node_id") == get_val(node, "node_id") for child in nodes_list):
+                nodes_list.append(node)
+
+
+def validate_and_set_readiness(node_index: dict[str, dict], repair_log: list[str] | None = None) -> list[str]:
+    # Support both dictionary and class object nodes seamlessly
+    def get_val(obj, key, default=None):
+        if hasattr(obj, key):
+            return getattr(obj, key)
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return default
+
+    def set_val(obj, key, val):
+        if hasattr(obj, key):
+            setattr(obj, key, val)
+        elif isinstance(obj, dict):
+            obj[key] = val
+
+    VALID_PARENTS = {}
+    for parent_type, child_types in VALID_PARENT.items():
+        for child_type in child_types:
+            if child_type not in VALID_PARENTS:
+                VALID_PARENTS[child_type] = set()
+            VALID_PARENTS[child_type].add(parent_type)
+
+    # Perform reparenting if invalid parent detected
+    reparented_any = True
+    reparent_attempts = 0
+    while reparented_any and reparent_attempts < 10:
+        reparented_any = False
+        reparent_attempts += 1
+        for node_id, node in list(node_index.items()):
+            node_type = get_val(node, "type")
+            parent_id = get_val(node, "parent_id")
+            if parent_id and node_type in VALID_PARENTS:
+                parent = node_index.get(parent_id)
+                if parent:
+                    parent_type = get_val(parent, "type")
+                    if parent_type not in VALID_PARENTS[node_type]:
+                        # Find nearest valid ancestor
+                        new_parent = None
+                        cur = parent
+                        while cur:
+                            cur_type = get_val(cur, "type")
+                            if cur_type in VALID_PARENTS[node_type]:
+                                new_parent = cur
+                                break
+                            cur_pid = get_val(cur, "parent_id")
+                            cur = node_index.get(cur_pid) if cur_pid else None
+                        
+                        if not new_parent:
+                            # Fallback to the first DOCUMENT node
+                            for n in node_index.values():
+                                if get_val(n, "type") == "DOCUMENT":
+                                    new_parent = n
+                                    break
+                                    
+                        if new_parent:
+                            reparent_node(node, new_parent, node_index, repair_log)
+                            reparented_any = True
+                            break
+
+    # Now calculate errors
+    errors = []
+    for node_id, node in node_index.items():
+        node_type = get_val(node, "type")
+        parent_id = get_val(node, "parent_id")
+        if parent_id:
+            parent = node_index.get(parent_id)
+            if parent:
+                parent_type = get_val(parent, "type")
+                if node_type not in VALID_PARENTS or parent_type not in VALID_PARENTS[node_type]:
+                    errors.append(f"Invalid hierarchy: {node_type} under {parent_type} | node_id={node_id}")
+
+    # Set readiness fields
+    for node_id, node in node_index.items():
+        node_type = get_val(node, "type")
+        if node_type == "CONTENT":
+            compressed_content = get_val(node, "compressed_content") or ""
+            token_count_compressed = get_val(node, "token_count_compressed") or 0
+            hash_val = get_val(node, "content_hash")
+            page_start = get_val(node, "page_start") or 0
+            children_ids = get_val(node, "children_ids") or []
+            
+            is_ready = (
+                len(compressed_content) > 50 and
+                token_count_compressed > 0 and
+                bool(hash_val) and
+                page_start >= 1 and
+                node_id not in [e.split('node_id=')[1].split('|')[0].strip() for e in errors]
+            )
+            set_val(node, "retrieval_ready", is_ready)
+            set_val(node, "is_retrieval_chunk", (
+                is_ready and 
+                50 <= token_count_compressed <= 2000 and
+                len(children_ids) == 0
+            ))
+        else:
+            set_val(node, "retrieval_ready", False)
+            set_val(node, "is_retrieval_chunk", False)
+            
+    return errors

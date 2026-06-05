@@ -507,6 +507,31 @@ def build_index(
         builder.skipped_duplicates,
     )
 
+    repair_log: list[str] = []
+    from .validation import deduplicate_node_ids, validate_and_set_readiness
+    from .path_utils import rebuild_paths
+    from .schema import finalize_children
+
+    # Deduplicate node IDs
+    deduplicate_node_ids(root, repair_log)
+
+    # Build flat node index
+    node_index = {}
+    def build_idx(n):
+        nid = n.get("node_id")
+        if nid:
+            node_index[nid] = n
+        for c in n.get("nodes") or []:
+            build_idx(c)
+    build_idx(root)
+
+    # Reparent invalid hierarchy relationships and set readiness
+    validate_and_set_readiness(node_index, repair_log)
+
+    # Re-run paths and children finalization to commit parent/children updates
+    rebuild_paths(root)
+    finalize_children(root)
+
     errors: list[str] = []
     with meter.track(Operation.DEDUPE_VALIDATION, local=True):
         try:
@@ -587,6 +612,7 @@ def build_index(
         "job_id": meter.job_id,
         "document_id": meter.document_id,
         "usage": usage_report,
+        "repair_log": repair_log,
         "dedup": {
             "accepted": builder.dedup.stats.accepted,
             "rejected_exact": builder.dedup.stats.rejected_exact,

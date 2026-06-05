@@ -61,10 +61,10 @@ def is_synthetic_title(text: str) -> bool:
 
 
 RE_LEGAL_SECTION_REF = re.compile(
-    r"^Section\s+\d{2,}[A-Z]{0,4}(?:\s+[A-Z]{1,3})?\s+(?:of\s+the\s+Act|under\s+the\s+Act)\b",
+    r"^Section\s+\d{2,}[A-Z]{0,4}(?:\s+[A-Z]{1,4})?\s+(?:of\s+the\s+Act|under\s+the\s+Act|of\s+the|or\s+section|or\s+under|and\s+section)\b",
     re.I,
 )
-RE_LEGAL_SECTION_LABEL = re.compile(r"^Section\s+\d{2,}[A-Z]{0,4}\s*:\s*", re.I)
+RE_LEGAL_SECTION_LABEL = re.compile(r"^Section\s+\d{2,}[A-Z]{0,4}(?:\s+[A-Z]{1,4})?\s*:\s*", re.I)
 RE_LEGAL_SECTION_CHAIN = re.compile(r"\bor\s+section\s+\d", re.I)
 
 
@@ -96,6 +96,8 @@ def is_paragraph_title(text: str) -> bool:
         return True
     if is_synthetic_title(t):
         return True
+    if re.match(r"^(?:provisions|introduction|background|definitions)\s+(?:of|to|for|under|in)\b", t, re.I):
+        return True
     if re.match(r"^(?:SECTION|UNIT|CHAPTER)\s+", t, re.I):
         return False
     if re.match(r"^\d+\.\d+(?:\.\d+)?\s+\S", t) and len(t) <= 90:
@@ -104,9 +106,19 @@ def is_paragraph_title(text: str) -> bool:
         return False
     if RE_BOOK_SECTION.match(t) and len(t) <= 90:
         return False
+    first_letter = re.search(r"[a-zA-Z]", t)
+    if first_letter and first_letter.group(0).islower() and not re.match(r"^\d+\.\d+", t):
+        return True
+    if t.endswith(".") and not re.match(r"^\d+\.\d+", t):
+        return True
+    if re.search(r"\b(or|and|of|the|to|in|under|with|for|shall|has|been|which|is|by|its|on|from)\s+section\b", t, re.I):
+        return True
+    if t.endswith(":") and not re.match(r"^(?:SECTION|UNIT|CHAPTER|FORM)\b", t, re.I):
+        if len(t.split()) > 3:
+            return True
     if len(t) > 55:
         return True
-    if re.search(r"\b(the|for the|according to|shall be|has been|which is)\b", t, re.I):
+    if re.search(r"\b(the|for the|according to|shall be|has been|which is|except where|furnished after|commencement of)\b", t, re.I):
         return True
     if t.count(".") >= 2 or t.count(",") >= 2:
         return True
@@ -298,8 +310,14 @@ FRONT_KW = (
 
 
 def clean_title(raw: str, node_type: str) -> str:
-    t = re.sub(r"\s+", " ", raw.strip())
+    t = strip_physical_index(raw)
+    t = re.sub(r"\s+", " ", t.strip())
     t = re.sub(r"\(Detected as[^)]*\)", "", t, flags=re.I).strip()
+    # Normalize OCR artifacts
+    t = re.sub(r'Section\s+(\d+[A-Z])\s+([A-Z])\b', r'Section \1\2', t)
+    t = re.sub(r'Section\s+(\d+[a-z])\s+([a-z])\b', r'Section \1\2', t)
+    t = re.sub(r'([A-Z]{2,})\s+(-)\s+([A-Z])', r'\1-\3', t)
+    
     if is_paragraph_title(t) and node_type in ("TOPIC", "SUBTOPIC", "CONTENT"):
         m = RE_TOPIC.match(t) or RE_SUBTOPIC.match(t)
         if m:
@@ -320,8 +338,18 @@ def is_structural_heading_line(raw: str) -> bool:
         return False
     if is_paragraph_title(raw) or is_legal_section_reference_title(raw):
         return False
-    if RE_SUBTOPIC.match(raw) or RE_TOPIC.match(raw):
+    
+    m_sub = RE_SUBTOPIC.match(raw)
+    if m_sub:
         return True
+        
+    m_top = RE_TOPIC.match(raw)
+    if m_top:
+        title_part = m_top.group(3)
+        if re.match(r"^[-+0-9.,\s]+$", title_part) or re.match(r"^\d+\.\d+", title_part):
+            return False
+        return True
+
     if RE_SECTION.match(raw) or RE_UNIT.match(raw) or RE_UNIT_SHORT.match(raw):
         return True
     if RE_GST_FORM.match(raw) or RE_GST_TOPIC.match(raw):
@@ -362,12 +390,24 @@ def classify_heading(
     raw = line.text.strip()
     if not raw or len(raw) > 120:
         return None
-    if not is_structural_heading_line(raw) and not (
+
+    # Check for typographic heading (bold or larger font, short, not a paragraph)
+    is_typo_heading = False
+    if (line.is_bold or line.font_size > median_font + 0.5) and len(raw.split()) < 12:
+        if not is_paragraph_title(raw) and not is_legal_section_reference_title(raw):
+            is_typo_heading = True
+
+    if not is_structural_heading_line(raw) and not is_typo_heading and not (
         not body_started and any(k in raw.lower() for k in FRONT_KW) and len(raw) < 100
     ):
         return None
 
     title = clean_title(raw, "TOPIC")
+
+    if is_typo_heading and not is_structural_heading_line(raw):
+        if not body_started:
+            return ("PREFACE", title, LEVEL["PREFACE"], {})
+        return ("TOPIC", title, LEVEL["TOPIC"], {})
 
     m = RE_SUBTOPIC.match(raw)
     if m:
@@ -377,10 +417,14 @@ def classify_heading(
 
     m = RE_TOPIC.match(raw)
     if m:
-        ntype = "SUBTOPIC" if RE_SUBTOPIC.match(raw) else "TOPIC"
-        return (ntype, title, LEVEL.get(ntype, LEVEL["TOPIC"]), {
-            "topic": f"{m.group(1)}.{m.group(2)}",
-        })
+        title_part = m.group(3)
+        if re.match(r"^[-+0-9.,\s]+$", title_part) or re.match(r"^\d+\.\d+", title_part):
+            pass
+        else:
+            ntype = "SUBTOPIC" if RE_SUBTOPIC.match(raw) else "TOPIC"
+            return (ntype, title, LEVEL.get(ntype, LEVEL["TOPIC"]), {
+                "topic": f"{m.group(1)}.{m.group(2)}",
+            })
 
     m = RE_SECTION.match(raw)
     if m:
@@ -443,9 +487,22 @@ def classify_heading(
     return None
 
 
+def detect_toc_pages(doc_lines: list[DocLine]) -> set[int]:
+    page_texts = {}
+    for ln in doc_lines:
+        page_texts.setdefault(ln.page, []).append(ln.text)
+    toc_pages = set()
+    for pnum, lines in page_texts.items():
+        if is_table_of_contents_content("", "\n".join(lines)):
+            toc_pages.add(pnum)
+    return toc_pages
+
+
 def detect_headings(doc_lines: list[DocLine]) -> list[dict]:
     sizes = [ln.font_size for ln in doc_lines if ln.font_size > 0]
     median = sorted(sizes)[len(sizes) // 2] if sizes else 10.0
+
+    toc_pages = detect_toc_pages(doc_lines)
 
     headings: list[dict] = []
     body_started = False
@@ -456,20 +513,53 @@ def detect_headings(doc_lines: list[DocLine]) -> list[dict]:
         if not hit:
             continue
         ntype, title, level, meta = hit
-        if ntype == "SECTION":
+        
+        # If it's a TOC page, skip all TOPIC/SUBTOPIC/PREFACE/OBJECTIVES/etc. headings
+        if ln.page in toc_pages and ntype in ("TOPIC", "SUBTOPIC", "PREFACE", "OBJECTIVES", "REFERENCES", "SYLLABUS", "COURSE_INFO"):
+            continue
+            
+        if ntype in ("CHAPTER", "APPENDIX", "SECTION", "UNIT"):
             body_started = True
-            current_section = meta.get("section")
-        elif ntype in ("UNIT", "TOPIC", "SUBTOPIC") and current_section:
-            body_started = True
+            if ntype == "SECTION":
+                current_section = meta.get("section")
+        elif ntype in ("TOPIC", "SUBTOPIC") and body_started:
+            pass
+            
         headings.append({
             "line_idx": i,
             "type": ntype,
             "title": title,
             "level": level,
             "meta": meta,
+            "page": ln.page,
         })
 
-    return headings
+    # Filter out TOC/Outline headings that are clustered together on the same page
+    filtered_headings = []
+    for idx, h in enumerate(headings):
+        if h["type"] in ("TOPIC", "SUBTOPIC"):
+            is_toc = False
+            # Look backwards
+            for prev_h in reversed(headings[:idx]):
+                if prev_h["page"] != h["page"]:
+                    break
+                if prev_h["type"] in ("TOPIC", "SUBTOPIC"):
+                    if h["line_idx"] - prev_h["line_idx"] < 5:
+                        is_toc = True
+                    break
+            # Look forwards
+            for next_h in headings[idx + 1:]:
+                if next_h["page"] != h["page"]:
+                    break
+                if next_h["type"] in ("TOPIC", "SUBTOPIC"):
+                    if next_h["line_idx"] - h["line_idx"] < 5:
+                        is_toc = True
+                    break
+            if is_toc:
+                continue
+        filtered_headings.append(h)
+
+    return filtered_headings
 
 
 """PDF extraction — line-level with font metadata and sanitation."""
@@ -829,7 +919,9 @@ def compression_ratio(raw: str, compressed: str) -> float:
 
 
 def _split_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+    # Replace newlines with spaces to join split layout lines
+    normalized_text = re.sub(r"\s+", " ", text or "")
+    parts = re.split(r"(?<=[.!?])\s+", normalized_text)
     return [p.strip() for p in parts if p.strip() and len(p.strip()) > 10]
 
 
@@ -905,18 +997,20 @@ def compress_text(raw: str, target_ratio: float = 0.70, min_ratio: float = 0.60)
             total += len(s) + 1
         if capped:
             result = "\n".join(capped).strip()
-        if len(result) / len(raw) > 0.92 and unique:
-            words = unique[0].split()
+        if len(result) / len(raw) > 0.92:
             budget = max(int(len(raw) * target_ratio), min_len)
-            trimmed: list[str] = []
+            words = result.split()
+            trimmed = []
             wlen = 0
             for w in words:
-                if wlen + len(w) + 1 > budget and trimmed:
+                if wlen + len(w) + 2 > budget and trimmed:
                     break
                 trimmed.append(w)
                 wlen += len(w) + 1
             if trimmed:
-                result = " ".join(trimmed)
+                result = " ".join(trimmed).strip()
+                if result and result[-1] not in ('.', '?', '!'):
+                    result = result.rstrip(' .!?') + "."
     return result
 
 

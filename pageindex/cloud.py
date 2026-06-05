@@ -316,6 +316,26 @@ def build_cloud_index(
 
     postprocess_vrag_tree(root, BuildConfig())
 
+    repair_log = []
+    from pageindex.vrag.validation import deduplicate_node_ids, validate_and_set_readiness
+    from pageindex.vrag.path_utils import rebuild_paths
+    from pageindex.vrag.schema import finalize_children
+
+    deduplicate_node_ids(root, repair_log)
+
+    node_index = {}
+    def build_idx(n):
+        nid = n.get("node_id")
+        if nid:
+            node_index[nid] = n
+        for c in n.get("nodes") or []:
+            build_idx(c)
+    build_idx(root)
+
+    validate_and_set_readiness(node_index, repair_log)
+    rebuild_paths(root)
+    finalize_children(root)
+
     meta: dict[str, Any] = {}
     try:
         meta = client.get_metadata(doc_id)
@@ -374,7 +394,7 @@ def build_cloud_index(
     log_info("[cloud] Step 3/3: doc_id=%s retrieval_ready=%s", doc_id, readiness["retrieval_ready"])
     return {
         "pipeline": "pageindex",
-        "schema_version": "2.4",
+        "schema_version": "2.5",
         "source_pdf": path.name,
         "doc_id": doc_id,
         "document_id": doc_id,
@@ -385,6 +405,7 @@ def build_cloud_index(
         "status": doc.get("status", "completed"),
         "retrieval_ready": readiness["retrieval_ready"],
         "readiness": readiness,
+        "repair_log": repair_log,
         "structure": raw_structure if raw_structure else export_node(root),
         "structure_vrag": export_node(root),
         "usage": usage_report,

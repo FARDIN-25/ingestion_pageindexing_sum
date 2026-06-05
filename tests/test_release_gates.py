@@ -23,7 +23,7 @@ if not PDF.exists():
 
 
 def test_schema_version():
-    assert SCHEMA_VERSION == "2.4"
+    assert SCHEMA_VERSION == "2.5"
 
 
 def test_physical_index_stripped():
@@ -111,7 +111,7 @@ def test_full_build_retrieval_ready():
     result = build_index(str(PDF), opt=opt)
     assert result["retrieval_ready"] is True
     assert result["readiness"]["retrieval_ready"] is True
-    assert result["schema_version"] == "2.4"
+    assert result["schema_version"] == "2.5"
     for n in result["flat_nodes"]:
         assert n["retrieval_ready"] is True
         assert n.get("raw_content")

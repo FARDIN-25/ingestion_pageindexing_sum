@@ -46,7 +46,7 @@ from pageindex.vrag.processing import DocLine, sha256_content
 
 def test_schema_version_24():
 
-    assert SCHEMA_VERSION == "2.4"
+    assert SCHEMA_VERSION == "2.5"
 
 
 

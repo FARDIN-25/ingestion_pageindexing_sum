@@ -219,8 +219,21 @@ def map_cloud_subtree(item: dict, parent: dict, counter: list[int]) -> dict | No
                 if is_valid_heading_title(line.strip()):
                     title = clean_title(line.strip(), "CONTENT")[:85]
                     break
-        if not title or is_paragraph_title(title):
-            return None
+        # PageIndex often returns truncated / paragraph-like titles on real body
+        # nodes. Never drop has_body leaves — otherwise document_nodes lose text.
+        if not title or is_paragraph_title(title) or is_legal_section_reference_title(title):
+            declared = (
+                (item.get("title") or item.get("heading") or item.get("section_title") or "")
+                .strip()
+            )
+            fallback = declared or (title or "").strip()
+            if not fallback:
+                for line in raw.split("\n")[:8]:
+                    line = line.strip()
+                    if line:
+                        fallback = line
+                        break
+            title = clean_title(fallback or "Content", "CONTENT")[:85]
         if is_table_of_contents_content(title, raw):
             toc = empty_node(
                 clean_title(title, "TABLE_OF_CONTENTS")[:85],

@@ -53,5 +53,5 @@ Write-Host " Open: http://127.0.0.1:$port" -ForegroundColor Green
 Write-Host " Health: http://127.0.0.1:$port/api/health" -ForegroundColor Green
 Write-Host ""
 
-.\.venv\Scripts\Activate.ps1
-.\.venv\Scripts\python.exe run_pageindex_server.py
+.\venv\Scripts\Activate.ps1
+.\venv\Scripts\python.exe run_pageindex_server.py

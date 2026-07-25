@@ -1,3 +1,8 @@
+"""S3 helpers for batch ingestion.
+
+NOTE: Batch route in app.py is currently COMMENTED / returns 410.
+Uncomment POST /api/ingestion/ingest/run to enable.
+"""
 import os
 import tempfile
 import boto3

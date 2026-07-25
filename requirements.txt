@@ -1,4 +1,3 @@
-# openai-agents  # optional: required for examples/agentic_vectorless_rag_demo.py
 pymupdf==1.26.4
 python-dotenv==1.0.1
 pyyaml==6.0.2
@@ -8,10 +7,16 @@ python-multipart==0.0.20
 requests==2.32.3
 pytest==8.3.5
 
+# S3 batch ingestion (modules restored; enable route in app.py to use)
 boto3>=1.28.0
+
 SQLAlchemy>=2.0.0
 psycopg2-binary>=2.9.0
+pgvector>=0.3.6
+alembic>=1.14.0
+
+sentence-transformers>=3.0.0
+torch>=2.2.0
 
 pydantic-settings>=2.0.0
 pydantic>=2.0.0
-pymupdf

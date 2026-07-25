@@ -143,6 +143,31 @@
     }
     .dropzone p { color: var(--text-muted); font-size: 0.9rem; margin-top: 8px; }
 
+    .mode-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .mode-option {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+      background: rgba(0,0,0,0.2); cursor: pointer;
+    }
+    .mode-option:hover { border-color: var(--accent); }
+    .mode-option input { margin-top: 3px; }
+    .mode-option strong { color: #fff; display: block; font-size: 0.9rem; }
+    .mode-option span { color: var(--text-muted); font-size: 0.8rem; line-height: 1.35; }
+
+    .vector-config {
+      margin-bottom: 16px; padding: 12px; border-radius: 10px;
+      border: 1px solid rgba(59,130,246,0.25); background: rgba(59,130,246,0.06);
+    }
+    .vector-config.hidden { display: none; }
+    .vector-config label { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px; }
+    .vector-config .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+    .vector-config input[type="number"] {
+      width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+      background: rgba(0,0,0,0.35); color: #fff; font-family: inherit;
+    }
+    .check-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: #fff; font-size: 0.85rem; }
+    .badge.skipped { background: rgba(148,163,184,0.2); color: #cbd5e1; }
+
     /* Queue Grid */
     .queue-header {
       display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;
@@ -250,18 +275,80 @@
     <!-- Left Sidebar: Controls -->
     <aside>
       <div class="panel">
-        <h2>S3 Batch Ingestion</h2>
-        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 24px; line-height: 1.5;">
-          Scans the configured S3 bucket for pending documents and processes them concurrently.
+        <h2>PDF Upload</h2>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 16px; line-height: 1.5;">
+          Choose a processing mode, then drag & drop a PDF.
         </p>
-        <button id="btnBatch" class="btn">
-          <div class="spinner"></div>
-          <span id="btnBatchText">Run Batch Pipeline</span>
-        </button>
 
-        <hr style="border:0; border-top: 1px solid var(--border); margin: 32px 0;">
+        <div class="mode-group" id="modeGroup">
+          <label class="mode-option">
+            <input type="radio" name="processMode" value="pageindex">
+            <div>
+              <strong>PageIndex</strong>
+              <span>Tree indexing via PageIndex API only. Skips embeddings.</span>
+            </div>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="processMode" value="vector">
+            <div>
+              <strong>Vector</strong>
+              <span>Local chunking + embeddings only. Skips PageIndex.</span>
+            </div>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="processMode" value="hybrid" checked>
+            <div>
+              <strong>Hybrid</strong>
+              <span>Runs PageIndex and Vector in parallel.</span>
+            </div>
+          </label>
+        </div>
 
-        <h2>Single Upload</h2>
+        <div class="vector-config" id="vectorConfig">
+          <strong style="color:#fff; font-size:0.9rem;">Document type (Vector)</strong>
+          <div class="mode-group" style="margin-bottom: 12px;">
+            <label class="mode-option">
+              <input type="radio" name="docType" value="book" checked>
+              <div>
+                <strong>Book</strong>
+                <span>Existing chunking + embedding (unchanged).</span>
+              </div>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="docType" value="notice_reply">
+              <div>
+                <strong>Notice / Reply</strong>
+                <span>GST notice + reply pair. Embeds notice only.</span>
+              </div>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="docType" value="faq">
+              <div>
+                <strong>FAQ</strong>
+                <span>Q/A pairs. Embeds questions only.</span>
+              </div>
+            </label>
+          </div>
+
+          <div id="bookChunkSettings">
+            <strong style="color:#fff; font-size:0.9rem;">Book chunk settings</strong>
+            <label class="check-row">
+              <input type="checkbox" id="noChunking">
+              No chunking (embed full document as one vector)
+            </label>
+            <div class="row" id="chunkInputs">
+              <div>
+                <label for="chunkSize">Chunk size (chars)</label>
+                <input type="number" id="chunkSize" min="100" step="50" value="1000">
+              </div>
+              <div>
+                <label for="chunkOverlap">Overlap (chars)</label>
+                <input type="number" id="chunkOverlap" min="0" step="50" value="200">
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="dropzone" id="dropzone">
           <strong style="color: #fff;">Drag & drop PDF</strong>
           <p>or click to browse</p>
@@ -297,8 +384,6 @@
 
   <script>
     // Elements
-    const btnBatch = document.getElementById('btnBatch');
-    const btnBatchText = document.getElementById('btnBatchText');
     const queueGrid = document.getElementById('queueGrid');
     const dropzone = document.getElementById('dropzone');
     const fileInput = document.getElementById('fileInput');
@@ -308,24 +393,42 @@
     const treeView = document.getElementById('treeView');
     const modalTitle = document.getElementById('modalTitle');
     const modalDocId = document.getElementById('modalDocId');
+    const vectorConfig = document.getElementById('vectorConfig');
+    const noChunking = document.getElementById('noChunking');
+    const chunkInputs = document.getElementById('chunkInputs');
+    const chunkSize = document.getElementById('chunkSize');
+    const chunkOverlap = document.getElementById('chunkOverlap');
+    const bookChunkSettings = document.getElementById('bookChunkSettings');
 
-    // Trigger Batch
-    btnBatch.addEventListener('click', async () => {
-      btnBatch.classList.add('loading');
-      btnBatchText.textContent = 'Starting...';
-      try {
-        const res = await fetch('/api/ingestion/ingest/run', { method: 'POST' });
-        const data = await res.json();
-        if (res.status === 409) alert(data.detail);
-      } catch (err) {
-        alert("Error starting batch: " + err.message);
-      }
-      setTimeout(() => {
-        btnBatch.classList.remove('loading');
-        btnBatchText.textContent = 'Run Batch Pipeline';
-      }, 1500);
-      fetchJobs();
+    function selectedMode() {
+      const el = document.querySelector('input[name="processMode"]:checked');
+      return el ? el.value : 'hybrid';
+    }
+
+    function selectedDocType() {
+      const el = document.querySelector('input[name="docType"]:checked');
+      return el ? el.value : 'book';
+    }
+
+    function syncModeUI() {
+      const mode = selectedMode();
+      const showVector = mode === 'vector' || mode === 'hybrid';
+      vectorConfig.classList.toggle('hidden', !showVector);
+      const isBook = selectedDocType() === 'book';
+      bookChunkSettings.classList.toggle('hidden', !isBook);
+      chunkInputs.style.opacity = noChunking.checked ? '0.45' : '1';
+      chunkSize.disabled = noChunking.checked;
+      chunkOverlap.disabled = noChunking.checked;
+    }
+
+    document.querySelectorAll('input[name="processMode"]').forEach((el) => {
+      el.addEventListener('change', syncModeUI);
     });
+    document.querySelectorAll('input[name="docType"]').forEach((el) => {
+      el.addEventListener('change', syncModeUI);
+    });
+    noChunking.addEventListener('change', syncModeUI);
+    syncModeUI();
 
     // Poll Jobs
     async function fetchJobs() {
@@ -352,9 +455,40 @@
           </div>
           <div class="job-id">${job.doc_id}</div>
           <div class="job-date">${new Date(job.created_at).toLocaleString()}</div>
+          ${renderServiceBox('PageIndex', job.pageindex || {}, '#34d399')}
+          ${renderServiceBox('Vector', job.vector || job.embedding || {}, '#93c5fd')}
           ${job.error_message ? `<div class="error-msg">${escapeHtml(job.error_message)}</div>` : ''}
         </div>
       `).join('');
+    }
+
+    function renderServiceBox(label, progress, accent) {
+      if (!progress || !progress.status) {
+        return `
+          <div style="margin-top: 10px; padding: 10px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid var(--border);">
+            <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600;">${label} — idle</div>
+          </div>
+        `;
+      }
+      const status = escapeHtml(progress.status);
+      const color = progress.status === 'skipped' ? '#cbd5e1' : accent;
+      const message = progress.message
+        ? `<div class="job-date" style="margin-top:6px;">${escapeHtml(progress.message)}</div>`
+        : '';
+      const count = (progress.total || progress.chunk_count)
+        ? `<div class="job-date">${progress.done || progress.embedded_nodes || 0}/${progress.total || progress.chunk_count || progress.total_nodes || 0}</div>`
+        : (progress.node_count != null ? `<div class="job-date">nodes: ${progress.node_count}</div>` : '');
+      const model = progress.model_name
+        ? `<div class="job-date">${escapeHtml(progress.model_name)}</div>`
+        : '';
+      return `
+        <div style="margin-top: 10px; padding: 10px; border-radius: 8px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.16);">
+          <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: ${color}; font-weight: 600;">${label} — ${status}</div>
+          ${count}
+          ${message}
+          ${model}
+        </div>
+      `;
     }
 
     // Modal / Tree
@@ -412,18 +546,41 @@
 
     async function handleUpload(file) {
       if (!file) return;
-      uploadStatus.textContent = "Uploading and processing...";
+      const mode = selectedMode();
+      const docType = selectedDocType();
+      const skipChunk = noChunking.checked;
+      const size = Number(chunkSize.value || 1000);
+      const overlap = Number(chunkOverlap.value || 200);
+
+      if ((mode === 'vector' || mode === 'hybrid') && docType === 'book' && !skipChunk) {
+        if (size < 100) {
+          uploadStatus.innerHTML = `<span style="color:var(--danger)">Chunk size must be >= 100</span>`;
+          return;
+        }
+        if (overlap < 0 || overlap >= size) {
+          uploadStatus.innerHTML = `<span style="color:var(--danger)">Overlap must be >= 0 and < chunk size</span>`;
+          return;
+        }
+      }
+
+      uploadStatus.textContent = `Uploading (${mode} / ${docType})...`;
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("mode", mode);
+      formData.append("doc_type", docType);
+      formData.append("no_chunking", skipChunk ? "true" : "false");
+      formData.append("chunk_size", String(size));
+      formData.append("chunk_overlap", String(overlap));
       try {
         const res = await fetch("/api/process", { method: "POST", body: formData });
-        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
-        uploadStatus.innerHTML = `<span style="color:var(--success)">Upload successful! Job queued.</span>`;
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `Upload failed (${res.status})`);
+        uploadStatus.innerHTML = `<span style="color:var(--success)">Queued (${escapeHtml(data.mode || mode)} / ${escapeHtml(data.doc_type || docType)}). Doc ID: ${escapeHtml(data.doc_id || "")}</span>`;
         fetchJobs();
       } catch (err) {
         uploadStatus.innerHTML = `<span style="color:var(--danger)">${err.message}</span>`;
       }
-      setTimeout(() => uploadStatus.textContent = "", 4000);
+      setTimeout(() => uploadStatus.textContent = "", 7000);
     }
 
     // Initial load and poll

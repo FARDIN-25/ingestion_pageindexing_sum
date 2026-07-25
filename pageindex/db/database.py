@@ -213,12 +213,33 @@ def _set_jobs_primary_key_on_seq_id(conn) -> None:
             "ALTER TABLE document_nodes DROP CONSTRAINT IF EXISTS document_nodes_doc_id_fkey"
         )
     )
+    conn.execute(
+        text(
+            "ALTER TABLE vectors DROP CONSTRAINT IF EXISTS vectors_job_id_fkey"
+        )
+    )
     conn.execute(text("DROP INDEX IF EXISTS ux_document_jobs_seq_id"))
     _drop_table_primary_key(conn, "document_jobs")
     conn.execute(text("ALTER TABLE document_jobs ADD PRIMARY KEY (seq_id)"))
     conn.execute(
         text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_document_jobs_doc_id ON document_jobs(doc_id)"
+        )
+    )
+    conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'vectors_job_id_fkey'
+                ) THEN
+                    ALTER TABLE vectors
+                    ADD CONSTRAINT vectors_job_id_fkey
+                    FOREIGN KEY (job_id) REFERENCES document_jobs(doc_id) ON DELETE CASCADE;
+                END IF;
+            END $$;
+            """
         )
     )
 
@@ -593,6 +614,165 @@ def ensure_schema() -> None:
                     "INSERT INTO app_migrations(key, value) VALUES('restore_compressed_content_v5', 'done')"
                 )
             )
+
+        _ensure_vectors_on_document_tables_v3(conn)
+
+
+def _ensure_vectors_on_document_tables_v3(conn) -> None:
+    """
+    Ensure vectors table exists.
+
+    Vector path is standalone: no FK to document_jobs / document_nodes.
+    PageIndex continues to own document_jobs + document_nodes only.
+    """
+    from pageindex.env_settings import settings
+
+    dim = int(settings.EMBEDDING_DIM)
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+    # Keep these for PageIndex integrity; vectors no longer depends on them.
+    conn.execute(
+        text("CREATE UNIQUE INDEX IF NOT EXISTS ux_document_jobs_seq_id ON document_jobs(seq_id)")
+    )
+    conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'uq_document_nodes_doc_node'
+                ) THEN
+                    DELETE FROM document_nodes a
+                    USING document_nodes b
+                    WHERE a.ctid < b.ctid
+                      AND a.doc_id = b.doc_id
+                      AND a.node_id = b.node_id;
+                    ALTER TABLE document_nodes
+                    ADD CONSTRAINT uq_document_nodes_doc_node UNIQUE (doc_id, node_id);
+                END IF;
+            END $$;
+            """
+        )
+    )
+
+    already = conn.execute(
+        text("SELECT value FROM app_migrations WHERE key='vectors_schema_v3_document'")
+    ).fetchone()
+    needs_rebuild = not already
+    if not needs_rebuild:
+        # Rebuild if still pointing at page_index_* or still has metadata column name clash.
+        fk = conn.execute(
+            text(
+                """
+                SELECT ccu.table_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.constraint_column_usage ccu
+                  ON tc.constraint_name = ccu.constraint_name
+                WHERE tc.table_name = 'vectors' AND tc.constraint_type = 'FOREIGN KEY'
+                  AND ccu.column_name = 'node_id'
+                LIMIT 1
+                """
+            )
+        ).fetchone()
+        has_chunk_meta = conn.execute(
+            text(
+                """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='vectors' AND column_name='chunk_meta'
+                """
+            )
+        ).fetchone()
+        if (fk and fk[0] == "page_index_nodes") or not has_chunk_meta:
+            needs_rebuild = True
+
+    if needs_rebuild:
+        conn.execute(text("DROP TABLE IF EXISTS vectors CASCADE"))
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE vectors (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    doc_id VARCHAR NOT NULL,
+                    job_id INTEGER NOT NULL,
+                    node_id VARCHAR NOT NULL,
+                    chunk_index SMALLINT NOT NULL DEFAULT 0,
+                    chunk_text TEXT NOT NULL,
+                    content_hash VARCHAR(64) NOT NULL,
+                    token_count INTEGER,
+                    embedding vector({dim}),
+                    embedding_dim SMALLINT,
+                    model_name VARCHAR,
+                    status VARCHAR NOT NULL DEFAULT 'pending',
+                    chunk_meta JSONB DEFAULT '{{}}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now(),
+                    CONSTRAINT uq_vectors_doc_node_chunk_model
+                        UNIQUE (doc_id, node_id, chunk_index, model_name)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vectors_doc_id ON vectors (doc_id)"))
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_vectors_status
+                ON vectors (status) WHERE status != 'completed'
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vectors_content_hash ON vectors (content_hash)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vectors_job_id ON vectors (job_id)"))
+        conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_indexes WHERE indexname = 'idx_vectors_embedding'
+                    ) THEN
+                        CREATE INDEX idx_vectors_embedding
+                        ON vectors USING hnsw (embedding vector_cosine_ops);
+                    END IF;
+                END $$;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO app_migrations(key, value)
+                VALUES('vectors_schema_v3_document', 'done')
+                ON CONFLICT (key) DO UPDATE SET value='done'
+                """
+            )
+        )
+
+    # notice_reply / faq reply|answer rows store embedding/model as NULL.
+    conn.execute(text("ALTER TABLE vectors ALTER COLUMN embedding_dim DROP NOT NULL"))
+    conn.execute(text("ALTER TABLE vectors ALTER COLUMN model_name DROP NOT NULL"))
+
+    # Standalone vector path: drop any remaining FKs into PageIndex tables.
+    already_v4 = conn.execute(
+        text("SELECT value FROM app_migrations WHERE key='vectors_schema_v4_standalone'")
+    ).fetchone()
+    if not already_v4:
+        conn.execute(text("ALTER TABLE vectors DROP CONSTRAINT IF EXISTS fk_vectors_doc_node"))
+        conn.execute(text("ALTER TABLE vectors DROP CONSTRAINT IF EXISTS vectors_job_id_fkey"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vectors_job_id ON vectors (job_id)"))
+        conn.execute(
+            text(
+                """
+                INSERT INTO app_migrations(key, value)
+                VALUES('vectors_schema_v4_standalone', 'done')
+                ON CONFLICT (key) DO UPDATE SET value='done'
+                """
+            )
+        )
+
+    # Drop unused duplicate tables (no longer referenced).
+    conn.execute(text("DROP TABLE IF EXISTS page_index_nodes CASCADE"))
+    conn.execute(text("DROP TABLE IF EXISTS page_index_jobs CASCADE"))
 
 
 def get_db():

@@ -1,8 +1,12 @@
+"""S3 batch PageIndex ingestion service.
+
+NOTE: Disabled in app.py (route commented + HTTP 410).
+Uncomment POST /api/ingestion/ingest/run to enable.
+"""
 import asyncio
 import os
 import uuid
 from pathlib import Path
-from fastapi import BackgroundTasks
 from pageindex.log_util import log_info, log_error, log_exception
 from pageindex.db.database import SessionLocal
 from pageindex.db.repository import IngestionRepository

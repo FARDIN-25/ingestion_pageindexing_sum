@@ -1,8 +1,10 @@
-from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm import Session
+
 from .models import DocumentJob, DocumentNode
 from .node_order import ordered_flat_nodes
 from .sort_ids import sortable_node_row_id
+
 
 class IngestionRepository:
     def __init__(self, db: Session):
@@ -10,6 +12,14 @@ class IngestionRepository:
 
     def get_job(self, doc_id: str) -> DocumentJob | None:
         return self.db.query(DocumentJob).filter(DocumentJob.doc_id == doc_id).first()
+
+    def list_nodes(self, doc_id: str) -> list[DocumentNode]:
+        return (
+            self.db.query(DocumentNode)
+            .filter(DocumentNode.doc_id == doc_id)
+            .order_by(DocumentNode.node_id.asc())
+            .all()
+        )
 
     def upsert_job(
         self,
@@ -50,7 +60,12 @@ class IngestionRepository:
 
     def replace_nodes(self, doc_id: str, flat_nodes: list[dict]):
         job = self.get_job(doc_id)
-        self.db.query(DocumentNode).filter(DocumentNode.doc_id == doc_id).delete()
+        # PageIndex path only — replace tree nodes for this doc.
+        # Vector path never writes to document_nodes.
+        self.db.query(DocumentNode).filter(DocumentNode.doc_id == doc_id).delete(
+            synchronize_session=False
+        )
+        self.db.flush()
 
         db_nodes = []
         id_map: dict[str, str] = {}
@@ -59,6 +74,7 @@ class IngestionRepository:
             old = str(n.get("node_id") or "")
             id_map[old] = f"{i:04d}"
 
+        seen_ids: set[str] = set()
         for n in ordered:
             raw = n.get("raw_content") or n.get("text") or ""
             metadata = {
@@ -87,9 +103,14 @@ class IngestionRepository:
                 node_json.setdefault("_original_parent_id", old_parent_id_str)
 
             job_seq = getattr(job, "seq_id", None) if job else None
+            row_id = sortable_node_row_id(job_seq, new_node_id)
+            if row_id in seen_ids:
+                continue
+            seen_ids.add(row_id)
+
             db_nodes.append(
                 DocumentNode(
-                    id=sortable_node_row_id(job_seq, new_node_id),
+                    id=row_id,
                     doc_id=doc_id,
                     seq_id=job_seq,
                     file_name=getattr(job, "file_name", None) if job else None,
